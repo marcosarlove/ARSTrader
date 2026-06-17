@@ -155,6 +155,12 @@ class ConfigManager:
                 )
             self.__dict__["modules"] = modules_dict
 
+            # Sincroniza configurações com o storage de telemetria
+            from core import storage
+            if self.system:
+                storage.config.environment = self.system.environment
+                storage.config.heartbeat_timeout = float(self.system.heartbeat_timeout)
+
         except KeyError as e:
             raise KeyError(f"[Config] Chave obrigatória ausente no YAML durante o mapeamento estrutural: {e}")
         except Exception as e:

@@ -139,6 +139,11 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
     assert rest.activation_time == "07:00:00"
     assert rest.standby_time is None
 
+    # 5. Validações da integração com o storage global
+    from core import storage
+    assert storage.config.environment == "sandbox"
+    assert storage.config.heartbeat_timeout == 5.0
+
 @pytest.mark.asyncio
 async def test_load_file_not_found(tmp_path):
     """Testa se um FileNotFoundError é lançado ao tentar carregar um arquivo inexistente."""

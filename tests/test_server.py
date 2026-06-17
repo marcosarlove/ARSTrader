@@ -1,0 +1,219 @@
+import asyncio
+import json
+import socket
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from core.server import SignalServer
+
+
+@pytest.fixture
+def unused_port():
+    """Retorna uma porta TCP livre local para os testes do servidor."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+@pytest.mark.asyncio
+async def test_signal_server_start_and_shutdown(unused_port):
+    """Verifica se o servidor inicia e para de forma limpa, fechando conexões."""
+    heartbeat_mock = MagicMock()
+    order_mock = AsyncMock()
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    await server.start()
+    assert server._is_running is True
+
+    # Tenta conectar um cliente
+    reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
+    assert len(server._active_connections) == 1
+
+    # Desliga o servidor
+    await server.shutdown()
+    assert server._is_running is False
+    assert len(server._active_connections) == 0
+
+    # Tenta fechar o escritor do cliente se ainda estiver aberto
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_signal_server_heartbeat_sync_callback(unused_port):
+    """Testa o disparo correto do callback síncrono de heartbeat."""
+    heartbeat_mock = MagicMock()
+    order_mock = AsyncMock()
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    await server.start()
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
+    
+    # Envia payload de HEARTBEAT
+    payload = {
+        "type": "HEARTBEAT",
+        "strategy_name": "morningstar",
+        "pid": 9999
+    }
+    writer.write(f"{json.dumps(payload)}\n".encode('utf-8'))
+    await writer.drain()
+
+    # Aguarda o processamento da mensagem
+    await asyncio.sleep(0.05)
+
+    heartbeat_mock.assert_called_once_with("morningstar", 9999)
+
+    writer.close()
+    await writer.wait_closed()
+    await server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_signal_server_heartbeat_async_callback(unused_port):
+    """Testa o disparo correto do callback assíncrono de heartbeat."""
+    heartbeat_mock = AsyncMock()
+    order_mock = AsyncMock()
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    await server.start()
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
+    
+    payload = {
+        "type": "HEARTBEAT",
+        "strategy_name": "eveningstar",
+        "pid": 8888
+    }
+    writer.write(f"{json.dumps(payload)}\n".encode('utf-8'))
+    await writer.drain()
+
+    await asyncio.sleep(0.05)
+
+    heartbeat_mock.assert_called_once_with("eveningstar", 8888)
+
+    writer.close()
+    await writer.wait_closed()
+    await server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_signal_server_order_callback(unused_port):
+    """Testa o disparo correto do callback de ordem (assíncrono por design)."""
+    heartbeat_mock = MagicMock()
+    order_mock = AsyncMock()
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    await server.start()
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
+    
+    payload = {
+        "type": "ORDER",
+        "strategy_name": "morningstar",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "market": "FUTURES",
+        "exchange": "binance",
+        "current_price": 68000.0,
+        "amount": 0.01,
+        "wallet_balance_before": 1000.0
+    }
+    writer.write(f"{json.dumps(payload)}\n".encode('utf-8'))
+    await writer.drain()
+
+    await asyncio.sleep(0.05)
+
+    order_mock.assert_called_once_with(payload)
+
+    writer.close()
+    await writer.wait_closed()
+    await server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_signal_server_invalid_payloads(unused_port):
+    """Verifica se payloads malformados ou tipos desconhecidos são tratados sem quebrar o servidor."""
+    heartbeat_mock = MagicMock()
+    order_mock = AsyncMock()
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    await server.start()
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
+    
+    # 1. Envia JSON corrompido
+    writer.write(b"corrupted json string \n")
+    # 2. Envia payload sem campos obrigatórios (Falta strategy_name)
+    writer.write(b'{"type": "HEARTBEAT"}\n')
+    # 3. Envia tipo de mensagem desconhecido
+    writer.write(b'{"type": "UNKNOWN_ACTION", "strategy_name": "morningstar"}\n')
+    await writer.drain()
+
+    await asyncio.sleep(0.05)
+
+    # Nenhum callback deve ter sido chamado
+    heartbeat_mock.assert_not_called()
+    order_mock.assert_not_called()
+
+    writer.close()
+    await writer.wait_closed()
+    await server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_signal_server_bind_failure(unused_port):
+    """Verifica se tentar rodar o servidor em uma porta já ocupada lança erro apropriado."""
+    heartbeat_mock = MagicMock()
+    order_mock = AsyncMock()
+
+    # Ocupa a porta abrindo um socket TCP
+    occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupier.bind(('127.0.0.1', unused_port))
+    occupier.listen(1)
+
+    server = SignalServer(
+        host="127.0.0.1",
+        port=unused_port,
+        on_heartbeat_cb=heartbeat_mock,
+        on_order_cb=order_mock
+    )
+
+    with pytest.raises(Exception):
+        await server.start()
+
+    occupier.close()
