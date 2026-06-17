@@ -28,11 +28,6 @@ async def test_module_loader_spawn_and_shutdown():
             enabled=False,
             path="eveningstar",
             class_name="EveningStar"
-        ),
-        "dashboard": MagicMock(
-            enabled=True,
-            path="dashboard",
-            class_name="DashboardServer"
         )
     }
 
@@ -54,12 +49,11 @@ async def test_module_loader_spawn_and_shutdown():
         try:
             await loader.start_modules()
 
-            # Deve levantar o morningstar mas ignorar eveningstar (desabilitado) e dashboard
+            # Deve levantar o morningstar mas ignorar eveningstar (desabilitado)
             mock_exec.assert_called_once()
             assert "morningstar" in loader._processes
             assert loader._processes["morningstar"] == mock_process
             assert "eveningstar" not in loader._processes
-            assert "dashboard" not in loader._processes
 
             # Garante que as informações foram registradas no storage
             from core import storage
@@ -231,3 +225,33 @@ async def test_module_loader_register_heartbeat():
 
     # Valida no storage
     assert storage.loader["morningstar"].last_heartbeat >= agora
+
+
+def test_module_loader_heartbeat_timeout_config():
+    """Verifica se o loader resolve corretamente o heartbeat_timeout a partir do system config, caindo para o padrão 15.0."""
+    # Caso 1: Sem config.system -> cai para 15.0
+    config_mock_none = MagicMock()
+    config_mock_none.system = None
+    loader_none = ModuleLoader(config_mock_none, "127.0.0.1", 8888)
+    assert loader_none._heartbeat_timeout == 15.0
+
+    # Caso 2: Com config.system com valor válido -> usa o valor do config
+    config_mock_val = MagicMock()
+    config_mock_val.system = MagicMock()
+    config_mock_val.system.heartbeat_timeout = 8
+    loader_val = ModuleLoader(config_mock_val, "127.0.0.1", 8888)
+    assert loader_val._heartbeat_timeout == 8.0
+
+    # Caso 3: Com config.system com string numérica -> converte para float
+    config_mock_str = MagicMock()
+    config_mock_str.system = MagicMock()
+    config_mock_str.system.heartbeat_timeout = "12"
+    loader_str = ModuleLoader(config_mock_str, "127.0.0.1", 8888)
+    assert loader_str._heartbeat_timeout == 12.0
+
+    # Caso 4: Com config.system com valor inválido -> cai para 15.0
+    config_mock_invalid = MagicMock()
+    config_mock_invalid.system = MagicMock()
+    config_mock_invalid.system.heartbeat_timeout = "nao_sou_numero"
+    loader_invalid = ModuleLoader(config_mock_invalid, "127.0.0.1", 8888)
+    assert loader_invalid._heartbeat_timeout == 15.0

@@ -9,13 +9,10 @@ import os
 import asyncio
 import logging
 from typing import Any, Optional, Tuple
-from dotenv import load_dotenv
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from core.models import Base
-
-# Carrega as variáveis do ficheiro .env
-load_dotenv()
+from core.logger import STATUS_LEVEL_NUM
 
 logger = logging.getLogger("ARSTrader.Database")
 
@@ -53,7 +50,7 @@ class DatabaseManager:
 
     async def start(self) -> None:
         """Inicializa o banco de dados, cria as tabelas e liga o worker em background."""
-        logger.info("[DB] A inicializar o motor de banco de dados assíncrono...")
+        logger.log(STATUS_LEVEL_NUM, "[DB] A inicializar o motor de banco de dados assíncrono...")
         
         # Cria as tabelas se elas não existirem no PostgreSQL
         async with self.engine.begin() as conn:
@@ -62,7 +59,7 @@ class DatabaseManager:
         # Inicia o worker assíncrono em segundo plano
         self._is_running = True
         self._worker_task = asyncio.create_task(self._persistence_worker())
-        logger.info("[DB] Worker de persistência não-bloqueante iniciado com sucesso.")
+        logger.log(STATUS_LEVEL_NUM, "[DB] Worker de persistência não-bloqueante iniciado com sucesso.")
 
     def enqueue_save(self, model_instance: Base) -> None:
         """
@@ -108,7 +105,7 @@ class DatabaseManager:
 
     async def shutdown(self) -> None:
         """Desliga o gerenciador de forma limpa, garantindo o escoamento da fila."""
-        logger.info("[DB] A encerrar o gerenciador de banco de dados... A escoar fila de escrita.")
+        logger.log(STATUS_LEVEL_NUM, "[DB] A encerrar o gerenciador de banco de dados... A escoar fila de escrita.")
         self._is_running = False
         
         # Aguarda até 5 segundos para que as escritas pendentes na fila terminem
@@ -130,4 +127,4 @@ class DatabaseManager:
 
         # Fecha todas as conexões físicas do Pool do SQLAlchemy
         await self.engine.dispose()
-        logger.info("[DB] Conexões com o banco de dados encerradas.")
+        logger.log(STATUS_LEVEL_NUM, "[DB] Conexões com o banco de dados encerradas.")

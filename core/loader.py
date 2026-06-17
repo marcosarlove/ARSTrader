@@ -50,8 +50,19 @@ class ModuleLoader:
         self._monitor_task: Optional[asyncio.Task] = None
         self._is_running = False
 
-        # Tempo máximo permitido sem receber batimento cardíaco da estratégia (15 segundos)
+        # Tempo máximo permitido sem receber batimento cardíaco da estratégia (15 segundos padrão ou do config)
         self._heartbeat_timeout = 15.0
+        if self.config:
+            system_cfg = getattr(self.config, "system", None)
+            if system_cfg:
+                timeout_val = getattr(system_cfg, "heartbeat_timeout", None)
+                if isinstance(timeout_val, (int, float)):
+                    self._heartbeat_timeout = float(timeout_val)
+                elif isinstance(timeout_val, str):
+                    try:
+                        self._heartbeat_timeout = float(timeout_val)
+                    except ValueError:
+                        pass
 
     async def start_modules(self) -> None:
         """Varre as configurações e inicia todos os módulos habilitados como subprocessos."""

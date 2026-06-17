@@ -7,6 +7,10 @@ system:
   heartbeat_timeout: 5            # Segundos tolerados antes do reset do processo filho
   max_signal_latency_ms: 50       # Idade máxima permitida para o sinal entrar em execução
 
+web_server:
+  host: "127.0.0.1"               # IP que a interface web (Dashboard) vai usar
+  port: 8080                      # Porta que a interface web (Dashboard) vai usar
+
 
 # --------------------------------------------------------------------
 # ABSTRAÇÃO DE CONEXÕES CCXT
@@ -46,13 +50,6 @@ global_risk:
 # --------------------------------------------------------------------
 
 modules:
-  # Módulo Especial de Telemetria Visual
-  dashboard:
-    enabled: true
-    path: "dashboard"
-    class_name: "DashboardServer"
-    port: 8000
-    host: "127.0.0.1"
 
   # Estratégia Avançada Estrela da Manhã
   morningstar:

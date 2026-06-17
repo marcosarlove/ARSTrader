@@ -12,6 +12,10 @@ def valid_yaml_content():
             "heartbeat_timeout": 5,
             "max_signal_latency_ms": 50
         },
+        "web_server": {
+            "host": "127.0.0.1",
+            "port": 8080
+        },
         "exchanges": {
             "binance": {
                 "enabled": True,
@@ -44,9 +48,7 @@ def valid_yaml_content():
             "dashboard": {
                 "enabled": True,
                 "path": "dashboard",
-                "class_name": "DashboardServer",
-                "port": 8000,
-                "host": "127.0.0.1"
+                "class_name": "DashboardServer"
             },
             "morningstar": {
                 "enabled": True,
@@ -85,6 +87,11 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
     assert manager.system.heartbeat_timeout == 5
     assert manager.system.max_signal_latency_ms == 50
 
+    # 1.5. Validações do bloco 'web_server'
+    assert manager.web_server is not None
+    assert manager.web_server.host == "127.0.0.1"
+    assert manager.web_server.port == 8080
+
     # 2. Validações de 'exchanges'
     assert "binance" in manager.exchanges
     assert "bybit" in manager.exchanges
@@ -122,8 +129,6 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
     assert dashboard.enabled is True
     assert dashboard.path == "dashboard"
     assert dashboard.class_name == "DashboardServer"
-    assert dashboard.port == 8000
-    assert dashboard.host == "127.0.0.1"
     assert dashboard.restrictions is None
 
     morningstar = manager.modules["morningstar"]
