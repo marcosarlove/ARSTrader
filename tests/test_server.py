@@ -123,7 +123,11 @@ async def test_signal_server_heartbeat_async_callback(unused_port):
 async def test_signal_server_order_callback(unused_port):
     """Testa o disparo correto do callback de ordem (assíncrono por design)."""
     heartbeat_mock = MagicMock()
-    order_mock = AsyncMock()
+    
+    async def mock_on_order(message_str, promise):
+        promise.set_result({"status": "SUCCESS"})
+        
+    order_mock = AsyncMock(side_effect=mock_on_order)
 
     server = SignalServer(
         host="127.0.0.1",
@@ -136,14 +140,17 @@ async def test_signal_server_order_callback(unused_port):
 
     reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
     
+    import time
     payload = {
         "type": "ORDER",
+        "guid": "test-guid-123",
         "strategy_name": "morningstar",
         "symbol": "BTC/USDT",
         "operation": "BUY",
         "market": "FUTURES",
         "exchange": "binance",
-        "current_price": 68000.0,
+        "price": 68000.0,
+        "timestamp": time.time(),
         "amount": 0.01,
         "wallet_balance_before": 1000.0
     }
@@ -152,7 +159,10 @@ async def test_signal_server_order_callback(unused_port):
 
     await asyncio.sleep(0.05)
 
-    order_mock.assert_called_once_with(payload)
+    order_mock.assert_called_once()
+    called_args = order_mock.call_args[0]
+    assert json.loads(called_args[0]) == payload
+    assert isinstance(called_args[1], asyncio.Future)
 
     writer.close()
     await writer.wait_closed()
@@ -178,8 +188,8 @@ async def test_signal_server_invalid_payloads(unused_port):
     
     # 1. Envia JSON corrompido
     writer.write(b"corrupted json string \n")
-    # 2. Envia payload sem campos obrigatórios (Falta strategy_name)
-    writer.write(b'{"type": "HEARTBEAT"}\n')
+    # 2. Envia payload sem campos obrigatórios (Falta tipo e estratégia)
+    writer.write(b'{"some_key": "some_value"}\n')
     # 3. Envia tipo de mensagem desconhecido
     writer.write(b'{"type": "UNKNOWN_ACTION", "strategy_name": "morningstar"}\n')
     await writer.drain()

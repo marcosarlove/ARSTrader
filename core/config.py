@@ -45,6 +45,9 @@ class GlobalRiskConfig:
     max_simultaneous_trades: int
     default_stop_loss_pct: float
     default_take_profit_pct: float
+    trade_risk_percentage: float
+    max_daily_loss_limit: float
+    default_safety_stop_loss_pct: float
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,9 @@ class ConfigManager:
                 max_simultaneous_trades=int(risk_data["max_simultaneous_trades"]),
                 default_stop_loss_pct=float(risk_data["default_stop_loss_pct"]),
                 default_take_profit_pct=float(risk_data["default_take_profit_pct"]),
+                trade_risk_percentage=float(risk_data.get("trade_risk_percentage", 0.10)),
+                max_daily_loss_limit=float(risk_data.get("max_daily_loss_limit", 100.0)),
+                default_safety_stop_loss_pct=float(risk_data.get("default_safety_stop_loss_pct", 5.0)),
             )
 
             # 4. Parsing dinâmico do bloco 'modules'

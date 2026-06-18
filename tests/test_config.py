@@ -42,7 +42,10 @@ def valid_yaml_content():
             "max_daily_loss_pct": 2.0,
             "max_simultaneous_trades": 3,
             "default_stop_loss_pct": 1.5,
-            "default_take_profit_pct": 3.0
+            "default_take_profit_pct": 3.0,
+            "trade_risk_percentage": 0.10,
+            "max_daily_loss_limit": 100.0,
+            "default_safety_stop_loss_pct": 5.0
         },
         "modules": {
             "dashboard": {
@@ -119,6 +122,9 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
     assert manager.global_risk.max_simultaneous_trades == 3
     assert manager.global_risk.default_stop_loss_pct == 1.5
     assert manager.global_risk.default_take_profit_pct == 3.0
+    assert manager.global_risk.trade_risk_percentage == 0.10
+    assert manager.global_risk.max_daily_loss_limit == 100.0
+    assert manager.global_risk.default_safety_stop_loss_pct == 5.0
 
     # 4. Validações de 'modules'
     assert "dashboard" in manager.modules

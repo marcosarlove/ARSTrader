@@ -61,6 +61,63 @@ class DatabaseManager:
         self._worker_task = asyncio.create_task(self._persistence_worker())
         logger.log(STATUS_LEVEL_NUM, "[DB] Worker de persistência não-bloqueante iniciado com sucesso.")
 
+    async def get_open_operations(self) -> list:
+        """
+        Busca todas as operações que foram executadas mas ainda não possuem 
+        um registro correspondente em trade_results (estão abertas).
+        """
+        from sqlalchemy import select
+        from core.models import OperationModel, TradeResultModel
+        
+        async with self.session_factory() as session:
+            stmt = select(OperationModel).outerjoin(TradeResultModel).where(
+                OperationModel.status == "EXECUTED",
+                TradeResultModel.id == None
+            )
+            result = await session.execute(stmt)
+            ops = result.scalars().all()
+            return [
+                {
+                    "guid": op.guid,
+                    "symbol": op.symbol,
+                    "operation": op.operation,
+                    "amount": float(op.amount) if op.amount is not None else 0.0,
+                    "current_price": float(op.current_price),
+                    "stop_loss": float(op.stop_loss) if op.stop_loss is not None else None,
+                    "take_profit": float(op.take_profit) if op.take_profit is not None else None,
+                }
+                for op in ops
+            ]
+
+    async def get_daily_loss(self) -> float:
+        """
+        Busca todos os resultados de trade ocorridos no dia de hoje (UTC)
+        e soma os prejuízos realizados.
+        """
+        from datetime import datetime, time, timezone
+        from sqlalchemy import select
+        from core.models import TradeResultModel
+        
+        start_of_today = datetime.combine(datetime.utcnow().date(), time.min).replace(tzinfo=timezone.utc)
+        
+        async with self.session_factory() as session:
+            stmt = select(TradeResultModel).where(
+                TradeResultModel.close_timestamp >= start_of_today
+            )
+            result = await session.execute(stmt)
+            trades = result.scalars().all()
+            return sum(abs(float(t.realized_pnl)) for t in trades if t.realized_pnl < 0)
+
+    async def get_operation_by_guid(self, guid: str) -> Optional[Any]:
+        """Busca um OperationModel na base de dados a partir do seu GUID único."""
+        from sqlalchemy import select
+        from core.models import OperationModel
+        
+        async with self.session_factory() as session:
+            stmt = select(OperationModel).where(OperationModel.guid == guid)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
     def enqueue_save(self, model_instance: Base) -> None:
         """
         Método não-bloqueante principal. 

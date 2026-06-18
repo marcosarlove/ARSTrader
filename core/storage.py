@@ -99,6 +99,10 @@ class WalletState(Observable):
         self.current_daily_loss_pct = 0.0
         self.simultaneous_trades = 0
         self.positions = []  # Nota: Para modificar e notificar em listas, reatribua: self.positions = [...]
+        self.active_locks = ObservableDict("wallet.active_locks", on_change_fn)
+        self.active_positions = ObservableDict("wallet.active_positions", on_change_fn)
+        self.daily_loss_counter = 0.0
+        self.max_daily_loss_limit = 0.0
 
 
 class CommsState(Observable):

@@ -12,5 +12,19 @@ from core.logger import LogManager
 from core.server import SignalServer
 from core.loader import ModuleLoader
 from core.storage import GlobalStorage, storage
+from core.wallet import WalletController
+from core.orchestrator import GlobalOrchestrator
+from core.web import TelemetryWebServer
 
-__all__ = ["ConfigManager", "DatabaseManager", "LogManager", "SignalServer", "ModuleLoader", "GlobalStorage", "storage"]
+__all__ = [
+    "ConfigManager",
+    "DatabaseManager",
+    "LogManager",
+    "SignalServer",
+    "ModuleLoader",
+    "GlobalStorage",
+    "storage",
+    "WalletController",
+    "GlobalOrchestrator",
+    "TelemetryWebServer",
+]

@@ -3,7 +3,7 @@ ARSTrader - Async Socket Signal Server (server.py)
 ==================================================
 Servidor local TCP assíncrono encarregado de ouvir os subprocessos (estratégias).
 Recebe pacotes JSON unificados contendo HEARTBEATS ou ORDENS e despacha-os
-através de Callbacks
+através de Callbacks usando Promises (Futures) para respostas não-bloqueantes.
 """
 
 import asyncio
@@ -21,7 +21,7 @@ logger = logging.getLogger("ARSTrader.Server")
 class SignalServer:
     """
     Servidor de Sockets TCP para Comunicação Inter-Processos (IPC).
-    Funciona no modelo Push-Only (as estratégias enviam dados e o Core processa).
+    Funciona no modelo Bidirecional Assíncrono via Padrão de Promessas.
     """
 
     def __init__(
@@ -29,13 +29,16 @@ class SignalServer:
         host: str,
         port: int,
         on_heartbeat_cb: Callable[[str, int], Any],
-        on_order_cb: Callable[[dict], Coroutine[Any, Any, None]],
+        on_order_cb: Callable[[str, asyncio.Future], Coroutine[Any, Any, None]],
+        on_rejected_order_cb: Optional[Callable[[dict, str], Coroutine[Any, Any, None]]] = None,
+        max_latency_seconds: float = 2.0
     ):
         """
         :param host: Endereço IP onde o servidor vai escutar (ex: '127.0.0.1')
         :param port: Porta numérica para o socket TCP (ex: 8888)
         :param on_heartbeat_cb: Função no Loader para registar o pulso (recebe strategy_name, pid)
-        :param on_order_cb: Corrotina (função async) no Core para processar a ordem de trading
+        :param on_order_cb: Corrotina no Orchestrator que recebe a string bruta do sinal e a Promessa
+        :param on_rejected_order_cb: Callback no Orchestrator para persistir ordens rejeitadas de antemão
         """
         self.host = host
         self.port = port
@@ -43,6 +46,11 @@ class SignalServer:
         # Callbacks de Inversão de Controlo
         self.on_heartbeat = on_heartbeat_cb
         self.on_order = on_order_cb
+        self.on_rejected_order = on_rejected_order_cb
+
+        # Controlador de tráfego para validação de schema e latência
+        from core.comms import TrafficController
+        self.traffic_controller = TrafficController(max_latency_seconds=max_latency_seconds)
 
         self._server: Optional[asyncio.Server] = None
         self._is_running = False
@@ -98,8 +106,15 @@ class SignalServer:
                 if not message_str:
                     continue
 
-                # Dispara o processamento da mensagem de forma assíncrona
-                asyncio.create_task(self._process_message(message_str))
+                # Pega o loop atual para gerar a promessa (Future) de resposta
+                loop = asyncio.get_running_loop()
+                promise = loop.create_future()
+
+                # Dispara o roteamento e processamento do pacote passando a promessa junto
+                # Rodamos como Task para permitir que múltiplos pacotes concorrentes usem o mesmo pipe se necessário
+                asyncio.create_task(
+                    self._route_and_await_signal(message_str, promise, writer)
+                )
 
         except asyncio.CancelledError:
             pass
@@ -117,46 +132,76 @@ class SignalServer:
                 pass
             logger.debug(f"[Server] Conexão encerrada para {client_address}")
 
-    async def _process_message(self, message_str: str) -> None:
-        """Faz o parse do JSON em microssegundos e distribui para o callback correto."""
+    async def _route_and_await_signal(
+        self, message_str: str, promise: asyncio.Future, writer: asyncio.StreamWriter
+    ) -> None:
+        """
+        Roteia o sinal para o destino correto. Se for uma ORDER, suspende a execução
+        da tarefa até que o Orchestrator cumpra a promessa, enviando o resultado de volta.
+        """
         try:
-            # Parse nativo (leva ~1-3 microssegundos)
-            payload = json.loads(message_str)
-            msg_type = payload.get("type")
-            strategy_name = payload.get("strategy_name")
-
-            if not msg_type or not strategy_name:
-                logger.warning(
-                    f"[Server] Mensagem inválida rejeitada (Falta type ou strategy_name): {message_str}"
-                )
-                return
-
-            # Roteamento direto por String
-            if msg_type == "HEARTBEAT":
+            # Tratamento rápido de Heartbeats para evitar overhead de Promises no Loader
+            if (
+                '"type": "HEARTBEAT"' in message_str
+                or '"type":"HEARTBEAT"' in message_str
+            ):
+                payload = json.loads(message_str)
+                strategy_name = payload.get("strategy_name", "unknown")
                 pid = payload.get("pid", 0)
-                # Chama o callback do Loader (síncrono ou disparado imediatamente)
+
                 if inspect.iscoroutinefunction(self.on_heartbeat):
                     await self.on_heartbeat(strategy_name, pid)
                 else:
                     self.on_heartbeat(strategy_name, pid)
+                return
 
-            elif msg_type == "ORDER":
-                logger.log(
-                    STATUS_LEVEL_NUM,
-                    f"[Server] Sinal de OPERAÇÃO recebido da estratégia '{strategy_name.upper()}'",
-                )
-                # Dispara o callback assíncrono do Core/Risco para processar e enviar à Exchange
-                await self.on_order(payload)
+            # Se for uma ordem de trading, aciona o fluxo principal do Core via Orchestrator
+            if '"type": "ORDER"' in message_str or '"type":"ORDER"' in message_str:
+                # Executa a validação de schema e latência do TrafficController de antemão
+                success, payload, verdict = self.traffic_controller.process_incoming_packet(message_str)
+                
+                if not success:
+                    # Envia a resposta final de erro pelo socket da estratégia com terminação newline
+                    response_payload = {"status": "IGNORED", "reason": verdict}
+                    writer.write(json.dumps(response_payload).encode("utf-8") + b"\n")
+                    await writer.drain()
+                    
+                    # Resolve a promessa interna para limpeza
+                    promise.set_result(response_payload)
+                    
+                    # Notifica o callback de auditoria de rejeições se cadastrado
+                    if self.on_rejected_order:
+                        try:
+                            if inspect.iscoroutinefunction(self.on_rejected_order):
+                                await self.on_rejected_order(payload or {}, verdict)
+                            else:
+                                self.on_rejected_order(payload or {}, verdict)
+                        except Exception as audit_err:
+                            logger.error(f"[Server] Erro ao disparar auditoria de rejeição: {audit_err}")
+                    return
 
+                # Chama o Orchestrator passando a string bruta e o objeto da promessa vacante
+                await self.on_order(message_str, promise)
+
+                # A Mágica do Desacoplamento: O Server suspende aqui até a promessa ser resolvida
+                response_payload = await promise
+
+                # Envia a resposta final de volta pelo socket da estratégia com terminação newline
+                writer.write(json.dumps(response_payload).encode("utf-8") + b"\n")
+                await writer.drain()
             else:
-                logger.warning(f"[Server] Tipo de mensagem desconhecido: '{msg_type}'")
+                logger.warning(
+                    f"[Server] Mensagem com tipo de payload desconhecido ou malformado."
+                )
 
         except json.JSONDecodeError:
             logger.error(
-                f"[Server] Falha ao fazer parse de JSON corrompido: {message_str}"
+                f"[Server] Falha ao fazer parse de JSON corrompido no pre-routing."
             )
         except Exception as e:
-            logger.error(f"[Server] Erro ao processar payload do sinal: {e}")
+            logger.error(
+                f"[Server] Erro crítico no ciclo de vida da Promise do sinal: {e}"
+            )
 
     async def shutdown(self) -> None:
         """Desliga o servidor de sockets fechando a porta local e conexões ativas."""
