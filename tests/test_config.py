@@ -206,3 +206,52 @@ async def test_load_invalid_value_type(tmp_path, valid_yaml_content):
     with pytest.raises(ValueError) as exc_info:
         await manager.load()
     assert "Erro crítico na conversão de tipos" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_load_config_with_env_vars(tmp_path, valid_yaml_content):
+    """Testa se variáveis de ambiente no YAML são interpoladas corretamente."""
+    os.environ["TEST_BINANCE_API_KEY"] = "env_api_key_123"
+    os.environ["TEST_BINANCE_SECRET"] = "env_secret_456"
+    
+    yaml_content = valid_yaml_content.copy()
+    yaml_content["exchanges"] = {
+        "binance": {
+            "enabled": True,
+            "api_key": "${TEST_BINANCE_API_KEY}",
+            "secret": "${TEST_BINANCE_SECRET}",
+            "password": None,
+            "options": {
+                "defaultType": "future"
+            }
+        },
+        "bybit": {
+            "enabled": False,
+            "api_key": "${TEST_BYBIT_API_KEY:default_bybit_key}",
+            "secret": "${TEST_BYBIT_SECRET:default_bybit_secret}",
+            "password": None,
+            "options": {
+                "defaultType": "linear"
+            }
+        }
+    }
+    
+    os.environ.pop("TEST_BYBIT_API_KEY", None)
+    os.environ.pop("TEST_BYBIT_SECRET", None)
+
+    temp_path = create_temp_yaml(tmp_path, yaml_content)
+    manager = ConfigManager(config_path=temp_path)
+    
+    await manager.load()
+    
+    # Verifica Binance
+    assert manager.exchanges["binance"].api_key == "env_api_key_123"
+    assert manager.exchanges["binance"].secret == "env_secret_456"
+    
+    # Verifica Bybit (usando valores default)
+    assert manager.exchanges["bybit"].api_key == "default_bybit_key"
+    assert manager.exchanges["bybit"].secret == "default_bybit_secret"
+    
+    os.environ.pop("TEST_BINANCE_API_KEY", None)
+    os.environ.pop("TEST_BINANCE_SECRET", None)
+

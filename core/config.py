@@ -96,13 +96,31 @@ class ConfigManager:
             )
 
         with open(self.config_path, "r", encoding="utf-8") as f:
-            # SafeLoader garante proteção contra injeção de objetos arbitrários
-            data = yaml.load(f, Loader=yaml.SafeLoader)
-            if not data:
-                raise ValueError(
-                    f"[Config] O arquivo {self.config_path} está vazio ou corrompido."
-                )
-            return data
+            content = f.read()
+
+        # Substitui variáveis de ambiente no formato ${VAR_NAME} ou ${VAR_NAME:default_val}
+        import re
+        pattern = re.compile(r'\$\{([A-Za-z0-9_]+)(?::([^}]*))?\}')
+
+        def replace_env(match):
+            var_name = match.group(1)
+            default_val = match.group(2)
+            val = os.environ.get(var_name)
+            if val is not None:
+                return val
+            if default_val is not None:
+                return default_val
+            return ""
+
+        content = pattern.sub(replace_env, content)
+
+        # SafeLoader garante proteção contra injeção de objetos arbitrários
+        data = yaml.load(content, Loader=yaml.SafeLoader)
+        if not data:
+            raise ValueError(
+                f"[Config] O arquivo {self.config_path} está vazio ou corrompido."
+            )
+        return data
 
     def _parse_and_bind(self, raw: Dict[str, Any]) -> None:
         """

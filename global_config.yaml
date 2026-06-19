@@ -19,8 +19,8 @@ web_server:
 exchanges:
   binance:
     enabled: true
-    api_key: "m5ORqav708ptiWt9lQFfa5H3xv8a2GO301ZvQK1Cfk93CVWkMLGBnEcnItmQeM3M"
-    secret: "dKLMJCHPWVxYsYLkzJYPyRLydrymWYlic8DqBlebBKNht3oxdR9KvvkwnyyMRF6p"
+    api_key: "${BINANCE_API_KEY}"
+    secret: "${BINANCE_SECRET}"
     password: null                # Binance não exige password
     options:
       defaultType: "future"       # future | spot | margin
@@ -28,8 +28,8 @@ exchanges:
 
   bybit:
     enabled: false
-    api_key: "API_KEY_BYBIT"
-    secret: "SECRET_BYBIT"
+    api_key: "${BYBIT_API_KEY:API_KEY_BYBIT}"
+    secret: "${BYBIT_SECRET:SECRET_BYBIT}"
     password: null
     options:
       defaultType: "linear"
