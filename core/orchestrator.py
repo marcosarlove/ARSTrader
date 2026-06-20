@@ -115,7 +115,7 @@ class GlobalOrchestrator:
             self.server = SignalServer(
                 host=self.ipc_host,
                 port=self.ipc_port,
-                on_heartbeat_cb=self.on_heartbeat,
+                on_control_cb=self.on_control_received,
                 on_order_cb=self.on_order_received,
                 on_rejected_order_cb=self.on_order_rejected,
                 max_latency_seconds=self.config.system.max_signal_latency_ms / 1000.0
@@ -142,10 +142,14 @@ class GlobalOrchestrator:
             from core.web import TelemetryWebServer
             self.web_server = TelemetryWebServer(
                 host=self.config.web_server.host,
-                port=self.config.web_server.port
+                port=self.config.web_server.port,
+                orchestrator=self
             )
             await self.web_server.start()
         elif self.web_server:
+            # Garante que passamos a referência se pudermos
+            if hasattr(self.web_server, "orchestrator"):
+                self.web_server.orchestrator = self
             if hasattr(self.web_server, "start"):
                 await self.web_server.start()
 
@@ -242,10 +246,10 @@ class GlobalOrchestrator:
                 current_loss = 0.0
         logger.log(STATUS_LEVEL_NUM, f"[Orchestrator] Reconciliação concluída. Drawdown diário ajustado: {current_loss:.4f} USDT")
 
-    async def on_heartbeat(self, strategy_name: str, pid: int) -> None:
-        """Callback de heartbeat recebido pelo SignalServer, encaminhado ao Loader."""
+    async def on_control_received(self, payload: dict) -> None:
+        """Callback de controle recebido pelo SignalServer, encaminhado ao Loader."""
         if self.loader:
-            self.loader.register_heartbeat(strategy_name, pid)
+            await self.loader.handle_control_signal(payload)
 
     async def on_order_received(self, message_str: str, promise: asyncio.Future) -> None:
         """
@@ -427,3 +431,113 @@ class GlobalOrchestrator:
                 logger.error(f"[Orchestrator] Erro ao encerrar DatabaseManager: {e}")
 
         logger.log(STATUS_LEVEL_NUM, "[Orchestrator] Sovereign Engine desligado com sucesso.")
+
+    async def safe_reload(self) -> bool:
+        """
+        Executa um soft-reboot in-process seguro:
+        1. Valida se existem ordens/posições abertas na Wallet. Se sim, rejeita a recarga.
+        2. Avisa os clientes conectados via WebSocket (enviando o status RELOADING).
+        3. Encerra de forma ordenada subcomponentes (Loader, SignalServer, Wallet, Exchange, etc.)
+           SEM desligar o TelemetryWebServer em si (para não derrubar a conexão da página web/websocket do utilizador).
+        4. Recarrega as configurações em RAM a partir do disco usando ruamel.yaml.
+        5. Re-instancia a Exchange, reconstrói o WalletController, reinicia o SignalServer e o Loader.
+        6. Reconcilia o estado.
+        7. Avisa os clientes via WebSocket (enviando o status OPERATIONAL).
+        """
+        logger.log(STATUS_LEVEL_NUM, "[Orchestrator] Solicitada recarga segura do bot...")
+        
+        # 1. Validação de posições ativas
+        if self.wallet and hasattr(self.wallet, "active_positions") and self.wallet.active_positions:
+            logger.warning("[Orchestrator] Recarga abortada: existem posições abertas na carteira.")
+            return False
+            
+        # 2. Avisar sobre o reload via WebSocket
+        if self.web_server and hasattr(self.web_server, "broadcast_system_event"):
+            await self.web_server.broadcast_system_event("RELOADING")
+            
+        try:
+            # 3. Desliga de forma ordenada os subcomponentes necessários (não o web_server nem o db)
+            # loader (mata estratégias filhas)
+            if self.loader:
+                await self.loader.shutdown()
+                self.loader = None
+                
+            # server (fecha socket IPC)
+            if self.server:
+                await self.server.shutdown()
+                self.server = None
+                
+            # wallet
+            if self.wallet:
+                await self.wallet.shutdown()
+                self.wallet = None
+                
+            # exchange
+            if self.exchange:
+                await self.exchange.close()
+                self.exchange = None
+                
+            # 4. Recarrega configurações a partir do arquivo
+            if self.config:
+                await self.config.load()
+            else:
+                self.config = ConfigManager(self.config_path)
+                await self.config.load()
+                
+            # 5. Recria e reinicia a exchange
+            exchange_name = self.config.global_risk.execution_exchange
+            ex_config = self.config.exchanges.get(exchange_name)
+            if not ex_config or not ex_config.enabled:
+                raise ValueError(f"Exchange {exchange_name} indisponível ou desativada.")
+                
+            options = {
+                'apiKey': ex_config.api_key,
+                'secret': ex_config.secret,
+                'password': ex_config.password,
+                'enableRateLimit': True,
+                'options': ex_config.options,
+            }
+            self.exchange = self.create_exchange(exchange_name, options)
+            if self.config.system.environment == "sandbox":
+                try:
+                    import inspect
+                    res = self.exchange.set_sandbox_mode(True)
+                    if inspect.iscoroutine(res):
+                        await res
+                except Exception as e:
+                    logger.warning(f"Falha ao definir modo sandbox na exchange: {e}")
+                    
+            # 6. Re-inicializa a Wallet e reconcilia
+            await self._reconcile_and_boot_wallet()
+            
+            # 7. Reinicia o SignalServer
+            self.server = SignalServer(
+                host=self.ipc_host,
+                port=self.ipc_port,
+                on_control_cb=self.on_control_received,
+                on_order_cb=self.on_order_received,
+                on_rejected_order_cb=self.on_order_rejected,
+                max_latency_seconds=self.config.system.max_signal_latency_ms / 1000.0
+            )
+            await self.server.start()
+            
+            # 8. Reinicia o Loader (estratégias filhas)
+            self.loader = ModuleLoader(
+                config_manager=self.config,
+                server_host=self.ipc_host,
+                server_port=self.ipc_port
+            )
+            await self.loader.start_modules()
+            
+            logger.log(STATUS_LEVEL_NUM, "[Orchestrator] Sovereign Engine recarregado com sucesso e operacional.")
+            
+            if self.web_server and hasattr(self.web_server, "broadcast_system_event"):
+                await self.web_server.broadcast_system_event("OPERATIONAL")
+                
+            return True
+            
+        except Exception as e:
+            logger.critical(f"[Orchestrator] Falha crítica durante o recarregamento: {e}", exc_info=True)
+            if self.web_server and hasattr(self.web_server, "broadcast_system_event"):
+                await self.web_server.broadcast_system_event("ERROR")
+            return False

@@ -58,7 +58,7 @@ async def test_module_loader_spawn_and_shutdown():
             # Garante que as informações foram registradas no storage
             from core import storage
             assert "morningstar" in storage.loader
-            assert storage.loader["morningstar"].status == "ON"
+            assert storage.loader["morningstar"].status == "SPAWNING"
             assert storage.loader["morningstar"].pid == 12345
         finally:
             # Desliga o loader (garante liberação de recursos em caso de falha de asserts)
@@ -132,7 +132,7 @@ async def test_module_loader_watchdog_physical_recovery():
 
             # Garante que as informações foram registradas/atualizadas no storage
             from core import storage
-            assert storage.loader["morningstar"].status == "ON"
+            assert storage.loader["morningstar"].status == "SPAWNING"
             assert storage.loader["morningstar"].pid == 22222
         finally:
             await loader.shutdown()
@@ -202,7 +202,7 @@ async def test_module_loader_watchdog_logical_timeout():
             assert loader._processes["morningstar"] == proc2
 
             from core import storage
-            assert storage.loader["morningstar"].status == "ON"
+            assert storage.loader["morningstar"].status == "SPAWNING"
             assert storage.loader["morningstar"].pid == 44444
         finally:
             await loader.shutdown()
@@ -218,13 +218,20 @@ async def test_module_loader_register_heartbeat():
     loader = ModuleLoader(config_mock, "127.0.0.1", 8888)
     
     agora = time.time()
-    loader.register_heartbeat("morningstar", 12345)
+    await loader.handle_control_signal({
+        "type": "CONTROL",
+        "action": "HEARTBEAT",
+        "strategy_name": "morningstar",
+        "pid": 12345,
+        "details": ""
+    })
     
     assert "morningstar" in loader._last_heartbeats
     assert loader._last_heartbeats["morningstar"] >= agora
 
     # Valida no storage
     assert storage.loader["morningstar"].last_heartbeat >= agora
+
 
 
 def test_module_loader_heartbeat_timeout_config():

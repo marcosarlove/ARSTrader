@@ -70,6 +70,7 @@ class ModuleConfig:
 class ConfigManager:
     def __init__(self, config_path: str = "global_config.yaml"):
         self.config_path = config_path
+        self.yaml_data = None  # Estrutura CommentedMap do ruamel.yaml preservando comentários/formatos
 
         # Atributos tipados que serão expostos publicamente como Read-Only
         self.system: Optional[SystemConfig] = None
@@ -89,38 +90,117 @@ class ConfigManager:
         return self
 
     def _read_yaml(self) -> Dict[str, Any]:
-        """Executa a leitura física e síncrona do arquivo YAML."""
+        """Executa a leitura física e síncrona do arquivo YAML via ruamel.yaml."""
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(
                 f"[Config] Arquivo de configuração não encontrado em: {self.config_path}"
             )
 
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        from ruamel.yaml import YAML
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
 
-        # Substitui variáveis de ambiente no formato ${VAR_NAME} ou ${VAR_NAME:default_val}
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            self.yaml_data = yaml_rt.load(f)
+
+        if not self.yaml_data:
+            raise ValueError(
+                f"[Config] O arquivo {self.config_path} está vazio ou corrompido."
+            )
+
+        # Retorna o dicionário expandindo as variáveis de ambiente (${VAR})
+        return self._expand_all_env_vars(self.yaml_data)
+
+    def _expand_all_env_vars(self, val: Any) -> Any:
+        """Expande recursivamente todas as variáveis de ambiente num mapa/lista/valor."""
         import re
         pattern = re.compile(r'\$\{([A-Za-z0-9_]+)(?::([^}]*))?\}')
 
         def replace_env(match):
             var_name = match.group(1)
             default_val = match.group(2)
-            val = os.environ.get(var_name)
-            if val is not None:
-                return val
+            v = os.environ.get(var_name)
+            if v is not None:
+                return v
             if default_val is not None:
                 return default_val
             return ""
 
-        content = pattern.sub(replace_env, content)
+        if isinstance(val, str):
+            return pattern.sub(replace_env, val)
+        elif isinstance(val, dict):
+            return {k: self._expand_all_env_vars(v) for k, v in val.items()}
+        elif isinstance(val, list):
+            return [self._expand_all_env_vars(item) for item in val]
+        return val
 
-        # SafeLoader garante proteção contra injeção de objetos arbitrários
-        data = yaml.load(content, Loader=yaml.SafeLoader)
-        if not data:
-            raise ValueError(
-                f"[Config] O arquivo {self.config_path} está vazio ou corrompido."
-            )
-        return data
+    async def save(self) -> None:
+        """Salva as configurações correntes em disco preservando comentários e espaçamento."""
+        if self.yaml_data is None:
+            raise ValueError("[Config] Nenhuma configuração carregada para salvar.")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._write_yaml)
+
+    def _write_yaml(self) -> None:
+        """Executa a escrita física e síncrona usando ruamel.yaml."""
+        from ruamel.yaml import YAML
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml_rt.dump(self.yaml_data, f)
+
+    def update_from_dict(self, new_data: Dict[str, Any]) -> None:
+        """
+        Atualiza recursivamente a estrutura de dados original (yaml_data) preservando
+        espaçamento, comentários e placeholders de variáveis de ambiente.
+        """
+        if self.yaml_data is None:
+            raise ValueError("[Config] Nenhuma configuração carregada para atualizar.")
+
+        def merge_dicts(target: Any, source: Any) -> None:
+            if not isinstance(target, dict) or not isinstance(source, dict):
+                return
+            for k, v in source.items():
+                if k in target:
+                    if isinstance(target[k], dict) and isinstance(v, dict):
+                        merge_dicts(target[k], v)
+                    else:
+                        # Se o valor existente no YAML original é um placeholder como ${BINANCE_API_KEY},
+                        # e o novo valor submetido é idêntico ao seu valor expandido atual, não sobrescrevemos.
+                        current_val = target[k]
+                        if isinstance(current_val, str) and current_val.startswith("${") and current_val.endswith("}"):
+                            expanded_val = self._expand_all_env_vars(current_val)
+                            if str(v) == str(expanded_val):
+                                continue
+
+                        # Realiza cast de tipo baseado no tipo atual se não for None
+                        if target[k] is not None:
+                            try:
+                                if isinstance(target[k], bool):
+                                    if str(v).lower() in ("true", "1", "yes"):
+                                        target[k] = True
+                                    elif str(v).lower() in ("false", "0", "no"):
+                                        target[k] = False
+                                    else:
+                                        target[k] = bool(v)
+                                elif isinstance(target[k], int):
+                                    target[k] = int(v)
+                                elif isinstance(target[k], float):
+                                    target[k] = float(v)
+                                else:
+                                    target[k] = v
+                            except Exception:
+                                target[k] = v
+                        else:
+                            target[k] = v
+                else:
+                    target[k] = v
+
+        merge_dicts(self.yaml_data, new_data)
+
+        # Sincroniza em RAM atualizando os atributos e binding tipado
+        expanded = self._expand_all_env_vars(self.yaml_data)
+        self._parse_and_bind(expanded)
 
     def _parse_and_bind(self, raw: Dict[str, Any]) -> None:
         """

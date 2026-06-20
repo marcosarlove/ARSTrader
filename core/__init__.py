@@ -15,6 +15,7 @@ from core.storage import GlobalStorage, storage
 from core.wallet import WalletController
 from core.orchestrator import GlobalOrchestrator
 from core.web import TelemetryWebServer
+from core.models import UserModel
 
 __all__ = [
     "ConfigManager",
@@ -27,4 +28,5 @@ __all__ = [
     "WalletController",
     "GlobalOrchestrator",
     "TelemetryWebServer",
+    "UserModel",
 ]

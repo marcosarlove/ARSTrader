@@ -19,13 +19,13 @@ def unused_port():
 @pytest.mark.asyncio
 async def test_signal_server_start_and_shutdown(unused_port):
     """Verifica se o servidor inicia e para de forma limpa, fechando conexões."""
-    heartbeat_mock = MagicMock()
+    control_mock = MagicMock()
     order_mock = AsyncMock()
 
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 
@@ -50,15 +50,15 @@ async def test_signal_server_start_and_shutdown(unused_port):
 
 
 @pytest.mark.asyncio
-async def test_signal_server_heartbeat_sync_callback(unused_port):
-    """Testa o disparo correto do callback síncrono de heartbeat."""
-    heartbeat_mock = MagicMock()
+async def test_signal_server_control_sync_callback(unused_port):
+    """Testa o disparo correto do callback síncrono de controle."""
+    control_mock = MagicMock()
     order_mock = AsyncMock()
 
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 
@@ -66,11 +66,13 @@ async def test_signal_server_heartbeat_sync_callback(unused_port):
 
     reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
     
-    # Envia payload de HEARTBEAT
+    # Envia payload de CONTROL (HEARTBEAT)
     payload = {
-        "type": "HEARTBEAT",
+        "type": "CONTROL",
+        "action": "HEARTBEAT",
         "strategy_name": "morningstar",
-        "pid": 9999
+        "pid": 9999,
+        "details": "heartbeat normal"
     }
     writer.write(f"{json.dumps(payload)}\n".encode('utf-8'))
     await writer.drain()
@@ -78,7 +80,13 @@ async def test_signal_server_heartbeat_sync_callback(unused_port):
     # Aguarda o processamento da mensagem
     await asyncio.sleep(0.05)
 
-    heartbeat_mock.assert_called_once_with("morningstar", 9999)
+    control_mock.assert_called_once_with({
+        "type": "CONTROL",
+        "action": "HEARTBEAT",
+        "strategy_name": "morningstar",
+        "pid": 9999,
+        "details": "heartbeat normal"
+    })
 
     writer.close()
     await writer.wait_closed()
@@ -86,15 +94,15 @@ async def test_signal_server_heartbeat_sync_callback(unused_port):
 
 
 @pytest.mark.asyncio
-async def test_signal_server_heartbeat_async_callback(unused_port):
-    """Testa o disparo correto do callback assíncrono de heartbeat."""
-    heartbeat_mock = AsyncMock()
+async def test_signal_server_control_async_callback(unused_port):
+    """Testa o disparo correto do callback assíncrono de controle."""
+    control_mock = AsyncMock()
     order_mock = AsyncMock()
 
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 
@@ -103,16 +111,24 @@ async def test_signal_server_heartbeat_async_callback(unused_port):
     reader, writer = await asyncio.open_connection("127.0.0.1", unused_port)
     
     payload = {
-        "type": "HEARTBEAT",
+        "type": "CONTROL",
+        "action": "READY",
         "strategy_name": "eveningstar",
-        "pid": 8888
+        "pid": 8888,
+        "details": "tudo pronto"
     }
     writer.write(f"{json.dumps(payload)}\n".encode('utf-8'))
     await writer.drain()
 
     await asyncio.sleep(0.05)
 
-    heartbeat_mock.assert_called_once_with("eveningstar", 8888)
+    control_mock.assert_called_once_with({
+        "type": "CONTROL",
+        "action": "READY",
+        "strategy_name": "eveningstar",
+        "pid": 8888,
+        "details": "tudo pronto"
+    })
 
     writer.close()
     await writer.wait_closed()
@@ -122,7 +138,7 @@ async def test_signal_server_heartbeat_async_callback(unused_port):
 @pytest.mark.asyncio
 async def test_signal_server_order_callback(unused_port):
     """Testa o disparo correto do callback de ordem (assíncrono por design)."""
-    heartbeat_mock = MagicMock()
+    control_mock = MagicMock()
     
     async def mock_on_order(message_str, promise):
         promise.set_result({"status": "SUCCESS"})
@@ -132,7 +148,7 @@ async def test_signal_server_order_callback(unused_port):
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 
@@ -172,13 +188,13 @@ async def test_signal_server_order_callback(unused_port):
 @pytest.mark.asyncio
 async def test_signal_server_invalid_payloads(unused_port):
     """Verifica se payloads malformados ou tipos desconhecidos são tratados sem quebrar o servidor."""
-    heartbeat_mock = MagicMock()
+    control_mock = MagicMock()
     order_mock = AsyncMock()
 
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 
@@ -197,7 +213,7 @@ async def test_signal_server_invalid_payloads(unused_port):
     await asyncio.sleep(0.05)
 
     # Nenhum callback deve ter sido chamado
-    heartbeat_mock.assert_not_called()
+    control_mock.assert_not_called()
     order_mock.assert_not_called()
 
     writer.close()
@@ -208,7 +224,7 @@ async def test_signal_server_invalid_payloads(unused_port):
 @pytest.mark.asyncio
 async def test_signal_server_bind_failure(unused_port):
     """Verifica se tentar rodar o servidor em uma porta já ocupada lança erro apropriado."""
-    heartbeat_mock = MagicMock()
+    control_mock = MagicMock()
     order_mock = AsyncMock()
 
     # Ocupa a porta abrindo um socket TCP
@@ -219,7 +235,7 @@ async def test_signal_server_bind_failure(unused_port):
     server = SignalServer(
         host="127.0.0.1",
         port=unused_port,
-        on_heartbeat_cb=heartbeat_mock,
+        on_control_cb=control_mock,
         on_order_cb=order_mock
     )
 

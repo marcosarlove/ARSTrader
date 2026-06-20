@@ -85,6 +85,7 @@ class DatabaseManager:
                     "current_price": float(op.current_price),
                     "stop_loss": float(op.stop_loss) if op.stop_loss is not None else None,
                     "take_profit": float(op.take_profit) if op.take_profit is not None else None,
+                    "strategy_name": op.strategy_name,
                 }
                 for op in ops
             ]

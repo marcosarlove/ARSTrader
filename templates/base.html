@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARSTrader | {% block title %}Dashboard{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #070913 0%, #0f172a 50%, #1e1b4b 100%);
+            --card-bg: rgba(15, 23, 42, 0.65);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-purple: #8b5cf6;
+            --accent-glow: rgba(139, 92, 246, 0.35);
+            --accent-pink: #d946ef;
+            --status-green: #10b981;
+            --status-red: #ef4444;
+            --status-yellow: #f59e0b;
+            --input-bg: rgba(15, 23, 42, 0.85);
+            --input-border: rgba(255, 255, 255, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg-gradient);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        .glow-1 {
+            position: absolute;
+            top: -10%;
+            left: -10%;
+            width: 50vw;
+            height: 50vw;
+            background: radial-gradient(circle, rgba(139, 92, 246, 0.08) 0%, rgba(0,0,0,0) 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+        .glow-2 {
+            position: absolute;
+            bottom: -10%;
+            right: -10%;
+            width: 50vw;
+            height: 50vw;
+            background: radial-gradient(circle, rgba(217, 70, 239, 0.05) 0%, rgba(0,0,0,0) 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2.5rem;
+            border-bottom: 1px solid var(--card-border);
+            background: rgba(15, 23, 42, 0.4);
+            backdrop-filter: blur(8px);
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+        }
+
+        .logo-text {
+            font-size: 1.75rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #ffffff, #c084fc, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        nav {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.95rem;
+            transition: color 0.2s, text-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            color: var(--text-primary);
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+
+        .nav-link.active {
+            border-bottom: 2px solid var(--accent-purple);
+            padding-bottom: 0.25rem;
+        }
+
+        .btn-logout {
+            background: rgba(239, 68, 68, 0.1);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            padding: 0.4rem 0.8rem;
+            border-radius: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            text-decoration: none;
+        }
+
+        .btn-logout:hover {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgba(239, 68, 68, 0.4);
+        }
+
+        main {
+            flex: 1;
+            padding: 2.5rem;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+            position: relative;
+        }
+
+        /* Loading Overlay Spinner */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(7, 9, 19, 0.95);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+        }
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+            display: none !important;
+        }
+        .spinner-container {
+            text-align: center;
+        }
+        .spinner {
+            width: 70px;
+            height: 70px;
+            border: 4px solid rgba(139, 92, 246, 0.1);
+            border-top: 4px solid var(--accent-purple);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1.5rem;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .spinner-text {
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #ffffff, #c084fc, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .spinner-sub {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        /* Notifications style */
+        .notification-toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid var(--card-border);
+            padding: 1rem 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            z-index: 9998;
+            backdrop-filter: blur(10px);
+        }
+        .notification-toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .notification-toast.success { border-left: 4px solid var(--status-green); }
+        .notification-toast.error { border-left: 4px solid var(--status-red); }
+        .notification-toast.info { border-left: 4px solid var(--accent-purple); }
+
+        {% block extra_css %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="glow-1"></div>
+    <div class="glow-2"></div>
+
+    <!-- Dark Overlay Spinner for Soft-Reboot -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner-container">
+            <div class="spinner"></div>
+            <div class="spinner-text">Reconfigurando ARSTrader</div>
+            <div class="spinner-sub">Reiniciando conexões, loops e estratégias com segurança...</div>
+        </div>
+    </div>
+
+    {% if session_valid %}
+    <header>
+        <a href="/" class="logo-container">
+            <i data-lucide="shield-alert" style="color: var(--accent-purple); width: 28px; height: 28px;"></i>
+            <span class="logo-text">ARSTrader</span>
+        </a>
+        <nav>
+            <a href="/" class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">
+                <i data-lucide="activity" style="width: 18px; height: 18px;"></i> Dashboard
+            </a>
+            <a href="/config" class="nav-link {% if active_page == 'config' %}active{% endif %}">
+                <i data-lucide="sliders" style="width: 18px; height: 18px;"></i> Configurações
+            </a>
+            <a href="/logout" class="btn-logout">
+                <i data-lucide="log-out" style="width: 16px; height: 16px;"></i> Logout
+            </a>
+        </nav>
+    </header>
+    {% endif %}
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Toast de Notificação -->
+    <div id="toast" class="notification-toast">
+        <i id="toast-icon" style="width: 20px; height: 20px;"></i>
+        <span id="toast-message"></span>
+    </div>
+
+    <script>
+        // Inicializa ícones do Lucide
+        lucide.createIcons();
+
+        // Sistema Global de Toasts
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const icon = document.getElementById('toast-icon');
+            const msgSpan = document.getElementById('toast-message');
+            
+            toast.className = `notification-toast show ${type}`;
+            msgSpan.textContent = message;
+            
+            if (type === 'success') {
+                icon.setAttribute('data-lucide', 'check-circle-2');
+                icon.style.color = 'var(--status-green)';
+            } else if (type === 'error') {
+                icon.setAttribute('data-lucide', 'alert-circle');
+                icon.style.color = 'var(--status-red)';
+            } else {
+                icon.setAttribute('data-lucide', 'info');
+                icon.style.color = 'var(--accent-purple)';
+            }
+            lucide.createIcons({attrs: {'data-lucide': true}});
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 4000);
+        }
+
+        // Monitor do Overlay de Loading por eventos globais
+        window.setLoadingOverlay = function(show) {
+            const overlay = document.getElementById('loading-overlay');
+            if (show) {
+                overlay.classList.remove('hidden');
+            } else {
+                overlay.classList.add('hidden');
+            }
+        };
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

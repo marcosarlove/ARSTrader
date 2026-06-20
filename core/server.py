@@ -28,7 +28,7 @@ class SignalServer:
         self,
         host: str,
         port: int,
-        on_heartbeat_cb: Callable[[str, int], Any],
+        on_control_cb: Callable[[dict], Any],
         on_order_cb: Callable[[str, asyncio.Future], Coroutine[Any, Any, None]],
         on_rejected_order_cb: Optional[Callable[[dict, str], Coroutine[Any, Any, None]]] = None,
         max_latency_seconds: float = 2.0
@@ -36,7 +36,7 @@ class SignalServer:
         """
         :param host: Endereço IP onde o servidor vai escutar (ex: '127.0.0.1')
         :param port: Porta numérica para o socket TCP (ex: 8888)
-        :param on_heartbeat_cb: Função no Loader para registar o pulso (recebe strategy_name, pid)
+        :param on_control_cb: Função no Orchestrator para gerenciar sinais de controle (recebe payload dict)
         :param on_order_cb: Corrotina no Orchestrator que recebe a string bruta do sinal e a Promessa
         :param on_rejected_order_cb: Callback no Orchestrator para persistir ordens rejeitadas de antemão
         """
@@ -44,7 +44,7 @@ class SignalServer:
         self.port = port
 
         # Callbacks de Inversão de Controlo
-        self.on_heartbeat = on_heartbeat_cb
+        self.on_control = on_control_cb
         self.on_order = on_order_cb
         self.on_rejected_order = on_rejected_order_cb
 
@@ -140,19 +140,20 @@ class SignalServer:
         da tarefa até que o Orchestrator cumpra a promessa, enviando o resultado de volta.
         """
         try:
-            # Tratamento rápido de Heartbeats para evitar overhead de Promises no Loader
+            # Tratamento de sinais do tipo CONTROL
             if (
-                '"type": "HEARTBEAT"' in message_str
-                or '"type":"HEARTBEAT"' in message_str
+                '"type": "CONTROL"' in message_str
+                or '"type":"CONTROL"' in message_str
             ):
-                payload = json.loads(message_str)
-                strategy_name = payload.get("strategy_name", "unknown")
-                pid = payload.get("pid", 0)
+                success, payload, verdict = self.traffic_controller.process_control_packet(message_str)
+                if not success:
+                    logger.error(f"[Server] Sinal de controle rejeitado pelo comms: {verdict}")
+                    return
 
-                if inspect.iscoroutinefunction(self.on_heartbeat):
-                    await self.on_heartbeat(strategy_name, pid)
+                if inspect.iscoroutinefunction(self.on_control):
+                    await self.on_control(payload)
                 else:
-                    self.on_heartbeat(strategy_name, pid)
+                    self.on_control(payload)
                 return
 
             # Se for uma ordem de trading, aciona o fluxo principal do Core via Orchestrator

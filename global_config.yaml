@@ -5,7 +5,7 @@
 system:
   environment: "production"          # sandbox | production
   heartbeat_timeout: 5            # Segundos tolerados antes do reset do processo filho
-  max_signal_latency_ms: 50       # Idade máxima permitida para o sinal entrar em execução
+  max_signal_latency_ms: 1000     # Idade máxima permitida para o sinal entrar em execução
 
 web_server:
   host: "127.0.0.1"               # IP que a interface web (Dashboard) vai usar
@@ -21,16 +21,16 @@ exchanges:
     enabled: true
     api_key: "${BINANCE_API_KEY}"
     secret: "${BINANCE_SECRET}"
-    password: null                # Binance não exige password
+    password:                     # Binance não exige password
     options:
       defaultType: "future"       # future | spot | margin
       adjustForTimeDifference: true
 
   bybit:
     enabled: false
-    api_key: "${BYBIT_API_KEY:API_KEY_BYBIT}"
-    secret: "${BYBIT_SECRET:SECRET_BYBIT}"
-    password: null
+    api_key: "${BYBIT_API_KEY}"
+    secret: "${BYBIT_SECRET}"
+    password:
     options:
       defaultType: "linear"
 
@@ -44,9 +44,9 @@ global_risk:
   max_simultaneous_trades: 3      # Limite absoluto de posições abertas ao mesmo tempo
   default_stop_loss_pct: 1.5      # Stop Loss padrão configurado globalmente
   default_take_profit_pct: 3.0    # Take Profit padrão configurado globalmente
-  trade_risk_percentage: 0.10     # Fração (10%) do saldo disponível em conta usada para abertura de cada ordem
-  max_daily_loss_limit: 100.0     # Limite máximo de perda financeira diária permitida (ex: 100.0 USDT)
-  default_safety_stop_loss_pct: 5.0 # Stop Loss de segurança padrão para ordens de fechamento manual
+  trade_risk_percentage: 0.1      # Fração (10%) do saldo disponível em conta usada para abertura de cada ordem
+  max_daily_loss_limit: 2.0       # Limite máximo de perda financeira diária permitida (ex: 100.0 USDT)
+  default_safety_stop_loss_pct: 3.0 # Stop Loss de segurança padrão para ordens de fechamento manual
 
 # --------------------------------------------------------------------
 # REGISTRO, ROTEAMENTO E RESTRIÇÕES ESPECÍFICAS DE MÓDULOS
@@ -59,12 +59,12 @@ modules:
     enabled: false
     path: "morningstar"       # Corresponde à pasta modules/morningstar
     class_name: "MorningStar"  # Classe principal dentro do runner.py exposta no __init__.py
-    heartbeat_interval: 2
+    heartbeat_interval: 5
     restrictions:
       target_markets: "*/USDT"
       allowed_exchanges: "*"
       activation_time: "07:00:00"
-      standby_time: null          # null = não entra em modo stand-by automaticamente
+      standby_time:               # null = não entra em modo stand-by automaticamente
 
 
   # Estratégia Avançada Estrela da Tarde
@@ -77,6 +77,6 @@ modules:
       target_markets: "*/USDT"
       allowed_exchanges: "*"
       activation_time: "07:00:00"
-      standby_time: null          # null = não entra em modo stand-by automaticamente
+      standby_time:               # null = não entra em modo stand-by automaticamente
 
 

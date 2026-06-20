@@ -19,6 +19,72 @@ from core.logger import LogManager
 from core.orchestrator import GlobalOrchestrator
 
 
+async def create_user_cli(username: str, password: str) -> int:
+    """Cria ou atualiza um utilizador administrador via CLI com a password hashed via bcrypt."""
+    import bcrypt
+    from core.database import DatabaseManager
+    from core.models import UserModel
+    from sqlalchemy import select
+
+    db = DatabaseManager()
+    print(f"A criar/atualizar o utilizador '{username}'...")
+    try:
+        # Garante que as tabelas existem antes de tentar criar
+        async with db.engine.begin() as conn:
+            await conn.run_sync(UserModel.metadata.create_all)
+            
+        async with db.session_factory() as session:
+            async with session.begin():
+                stmt = select(UserModel).where(UserModel.username == username)
+                result = await session.execute(stmt)
+                existing_user = result.scalar_one_or_none()
+                
+                hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                if existing_user:
+                    print(f"Utilizador '{username}' já existe. A atualizar a password...")
+                    existing_user.password_hash = hashed_pw
+                else:
+                    new_user = UserModel(username=username, password_hash=hashed_pw)
+                    session.add(new_user)
+        await db.engine.dispose()
+        print(f"Utilizador '{username}' criado/atualizado com sucesso!")
+        return 0
+    except Exception as e:
+        print(f"Erro ao criar/atualizar utilizador: {e}")
+        await db.engine.dispose()
+        return 1
+
+
+async def delete_user_cli(username: str) -> int:
+    """Apaga um utilizador administrador existente via CLI."""
+    from core.database import DatabaseManager
+    from core.models import UserModel
+    from sqlalchemy import select
+
+    db = DatabaseManager()
+    print(f"A apagar o utilizador '{username}'...")
+    try:
+        async with db.session_factory() as session:
+            async with session.begin():
+                stmt = select(UserModel).where(UserModel.username == username)
+                result = await session.execute(stmt)
+                existing_user = result.scalar_one_or_none()
+                
+                if existing_user:
+                    await session.delete(existing_user)
+                    print(f"Utilizador '{username}' apagado com sucesso!")
+                    success = True
+                else:
+                    print(f"Erro: Utilizador '{username}' não encontrado na base de dados.")
+                    success = False
+        await db.engine.dispose()
+        return 0 if success else 1
+    except Exception as e:
+        print(f"Erro ao apagar utilizador: {e}")
+        await db.engine.dispose()
+        return 1
+
+
 async def main_async(args: argparse.Namespace) -> int:
     """Loop assíncrono principal do motor de trading."""
     logger = logging.getLogger("ARSTrader.Main")
@@ -105,6 +171,26 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Nível mínimo de verbosidade do console (padrão: INFO)"
     )
+    parser.add_argument(
+        "--create-user",
+        action="store_true",
+        help="Criar um novo usuário administrador para o Dashboard e sair."
+    )
+    parser.add_argument(
+        "--username",
+        type=str,
+        help="Nome de usuário para o novo administrador"
+    )
+    parser.add_argument(
+        "--password",
+        type=str,
+        help="Senha para o novo administrador"
+    )
+    parser.add_argument(
+        "--delete-user",
+        action="store_true",
+        help="Apagar um usuário administrador existente do Dashboard e sair."
+    )
     args = parser.parse_args()
 
     # 3. Validação prévia de existência da URL do Banco de Dados
@@ -113,6 +199,22 @@ def main():
         print("Por favor, crie um arquivo .env na raiz do projeto com o seguinte padrão:")
         print("DATABASE_URL=postgresql+asyncpg://usuario:senha@localhost:5432/nome_do_banco")
         sys.exit(1)
+
+    # 3.1. Execução rápida se a intenção for a criação de usuário administrador
+    if args.create_user:
+        if not args.username or not args.password:
+            print("[ERRO CRÍTICO] Para criar um utilizador, deve fornecer --username e --password.")
+            sys.exit(1)
+        exit_code = asyncio.run(create_user_cli(args.username, args.password))
+        sys.exit(exit_code)
+
+    # 3.2. Execução rápida se a intenção for a exclusão de usuário administrador
+    if args.delete_user:
+        if not args.username:
+            print("[ERRO CRÍTICO] Para apagar um utilizador, deve fornecer --username.")
+            sys.exit(1)
+        exit_code = asyncio.run(delete_user_cli(args.username))
+        sys.exit(exit_code)
 
     # 4. Inicializa o LogManager de forma não-bloqueante
     console_level = getattr(logging, args.console_level.upper(), logging.INFO)

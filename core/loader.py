@@ -83,29 +83,85 @@ class ModuleLoader:
             from core import storage
 
             storage.register_module(mod_name)
-            storage.loader[mod_name].status = "STARTING"
+            storage.loader[mod_name].status = "SPAWNING"
 
             await self._spawn_process(mod_name, mod_config.path, mod_config.class_name)
 
         # Inicia a tarefa em background que monitora a saúde física e os batimentos dos processos
         self._monitor_task = asyncio.create_task(self._monitor_processes())
 
-    def register_heartbeat(self, strategy_name: str, pid: int) -> None:
+    async def handle_control_signal(self, payload: dict) -> None:
         """
-        MÉTODO CALLBACK: Invocado pelo SignalServer sempre que um pulso TCP chega.
-        Atualiza o carimbo de tempo da RAM instantaneamente.
+        MÉTODO CALLBACK: Processa os sinais de controle do tipo CONTROL enviados pelas estratégias.
         """
-        agora = time.time()
-        self._last_heartbeats[strategy_name] = agora
-        logger.debug(
-            f"[Loader] Heartbeat recebido de '{strategy_name}' (PID registrado no sinal: {pid})"
-        )
+        strategy_name = payload["strategy_name"]
+        action = payload["action"]
+        pid = payload["pid"]
+        details = payload.get("details", "")
 
-        # Sincroniza no storage de telemetria
+        agora = time.time()
         from core import storage
 
-        if strategy_name in storage.loader:
-            storage.loader[strategy_name].last_heartbeat = agora
+        if strategy_name not in storage.loader:
+            storage.register_module(strategy_name)
+
+        module_state = storage.loader[strategy_name]
+
+        if action == "BOOT":
+            logger.info(
+                f"[Loader] Módulo '{strategy_name}' inicializando (BOOT). PID: {pid}. Detalhes: {details}"
+            )
+            module_state.status = "STARTING"
+            module_state.pid = pid
+            module_state.started_at = agora
+            self._last_heartbeats[strategy_name] = agora
+
+        elif action == "READY":
+            logger.info(
+                f"[Loader] Módulo '{strategy_name}' operacional (READY). Detalhes: {details}"
+            )
+            module_state.status = "RUN"
+            module_state.pid = pid
+            self._last_heartbeats[strategy_name] = agora
+
+        elif action == "HEARTBEAT":
+            logger.debug(
+                f"[Loader] Heartbeat recebido de '{strategy_name}' (PID: {pid})"
+            )
+            self._last_heartbeats[strategy_name] = agora
+            module_state.last_heartbeat = agora
+            if module_state.status not in ["RUN", "STARTING"]:
+                module_state.status = "RUN"
+
+        elif action == "SHUTDOWN":
+            logger.info(
+                f"[Loader] Módulo '{strategy_name}' solicitou desligamento (SHUTDOWN). Detalhes: {details}"
+            )
+            module_state.status = "OFF"
+            module_state.pid = 0
+            
+            proc = self._processes.pop(strategy_name, None)
+            if proc:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            self._last_heartbeats.pop(strategy_name, None)
+
+        elif action == "ERROR":
+            logger.error(
+                f"[Loader] Módulo '{strategy_name}' reportou erro crítico (ERROR). Status: CRASHED. Detalhes: {details}"
+            )
+            module_state.status = "CRASHED"
+            
+            proc = self._processes.pop(strategy_name, None)
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._last_heartbeats.pop(strategy_name, None)
+            await self._recover_module(strategy_name)
 
     async def _spawn_process(self, name: str, path: str, class_name: str) -> None:
         """Gera um subprocesso do Linux injetando o IP e Porta do servidor central."""
@@ -155,7 +211,7 @@ class ModuleLoader:
             if name in storage.loader:
                 storage.loader[name].pid = proc.pid
                 storage.loader[name].started_at = agora
-                storage.loader[name].status = "ON"
+                storage.loader[name].status = "SPAWNING"
 
             # Dispara tarefas assíncronas para canalizar o stdout/stderr do processo para o logger do Core
             asyncio.create_task(self._read_stream(name, proc.stdout, "INFO"))
@@ -206,7 +262,7 @@ class ModuleLoader:
                         from core import storage
 
                         if name in storage.loader:
-                            storage.loader[name].status = "OFF"
+                            storage.loader[name].status = "CRASHED"
                             storage.loader[name].pid = 0
                         await self._recover_module(name)
                         continue
@@ -220,7 +276,7 @@ class ModuleLoader:
                         from core import storage
 
                         if name in storage.loader:
-                            storage.loader[name].status = "RECOVERING"
+                            storage.loader[name].status = "CRASHED"
 
                         # Força a derrubada imediata para limpar o processo fantasma
                         try:
@@ -228,9 +284,7 @@ class ModuleLoader:
                                 f"[Loader] Forçando SIGKILL no processo travado de '{name.upper()}' (PID: {proc.pid})"
                             )
                             proc.kill()
-                            await (
-                                proc.wait()
-                            )  # Limpa os resíduos da tabela de processos do Linux
+                            await proc.wait()  # Limpa os resíduos da tabela de processos do Linux
                         except Exception:
                             pass
 
@@ -263,6 +317,46 @@ class ModuleLoader:
 
             mod_config = self.config.modules[name]
             await self._spawn_process(name, mod_config.path, mod_config.class_name)
+
+    async def sync_modules(self) -> None:
+        """
+        Sincroniza os processos das estratégias com as configurações correntes em tempo real:
+        - Se uma estratégia está ativa no config mas não tem processo, spawna ela.
+        - Se uma estratégia está desativada no config mas tem processo ativo, desliga ela.
+        """
+        logger.info("[Loader] A sincronizar estratégias em tempo real...")
+        modules_to_load = self.config.modules
+        from core import storage
+
+        for mod_name, mod_config in modules_to_load.items():
+            is_active = mod_config.enabled
+            has_proc = mod_name in self._processes
+
+            if is_active and not has_proc:
+                logger.info(f"[Loader] A ativar estratégia '{mod_name}' em tempo real...")
+                storage.register_module(mod_name)
+                storage.loader[mod_name].status = "SPAWNING"
+                await self._spawn_process(mod_name, mod_config.path, mod_config.class_name)
+            elif not is_active and has_proc:
+                logger.info(f"[Loader] A desativar estratégia '{mod_name}' em tempo real...")
+                if mod_name in storage.loader:
+                    storage.loader[mod_name].status = "OFF"
+                    storage.loader[mod_name].pid = 0
+                
+                proc = self._processes.pop(mod_name, None)
+                self._last_heartbeats.pop(mod_name, None)
+                if proc:
+                    try:
+                        proc.terminate()
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
     async def shutdown(self) -> None:
         """Para o monitoramento e encerra todos os subprocessos de forma coordenada."""

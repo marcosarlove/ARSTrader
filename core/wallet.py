@@ -105,7 +105,15 @@ class WalletController:
         if not isinstance(self.exchange, Mock):
             try:
                 logger.info("[Wallet] Validando credenciais com a Exchange via REST API...")
-                await self.exchange.fetch_balance()
+                balance_data = await self.exchange.fetch_balance()
+                free_balance = balance_data.get("free", {})
+                allowed_bases = ["USDT", "USDC", "USD"]
+                usdt_balance = 0.0
+                for base in allowed_bases:
+                    if base in free_balance and free_balance[base] > 0:
+                        usdt_balance = free_balance[base]
+                        break
+                storage.wallet.balance = float(usdt_balance)
             except ccxt.AuthenticationError as e:
                 logger.critical(f"[Wallet] Falha crítica de autenticação na Exchange (API Keys inválidas): {e}")
                 raise e
@@ -157,6 +165,7 @@ class WalletController:
                     "exchange_order_id": order_id,
                     "stop_loss": op.get("stop_loss"),
                     "take_profit": op.get("take_profit"),
+                    "strategy_name": op.get("strategy_name"),
                 }
                 storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
                 return None
@@ -212,6 +221,7 @@ class WalletController:
                 "exchange_order_id": order_id,
                 "stop_loss": op.get("stop_loss"),
                 "take_profit": op.get("take_profit"),
+                "strategy_name": op.get("strategy_name"),
             }
             storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
             return None
@@ -659,6 +669,7 @@ class WalletController:
                 "status": "PENDING_OPEN",
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
+                "strategy_name": signal.get("strategy_name"),
             }
 
             logger.info(

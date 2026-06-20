@@ -123,3 +123,21 @@ class TradeResultModel(Base):
         Index("idx_results_outcome", "outcome"),
         Index("idx_results_time", "close_timestamp"),
     )
+
+
+class UserModel(Base):
+    """
+    Tabela de Usuários para autenticação no Dashboard.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_users_username", "username"),
+    )
+

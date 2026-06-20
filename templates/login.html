@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Autenticação{% endblock %}
+
+{% block extra_css %}
+    .login-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: calc(100vh - 5rem);
+    }
+    .login-card {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 1.5rem;
+        padding: 3rem;
+        width: 100%;
+        max-width: 460px;
+        backdrop-filter: blur(20px);
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+        border-top: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .login-header {
+        text-align: center;
+        margin-bottom: 2.5rem;
+    }
+    .login-title {
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        margin-top: 1rem;
+        background: linear-gradient(to right, #ffffff, #c084fc);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .login-subtitle {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
+    }
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+    .form-label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .form-input {
+        width: 100%;
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        color: var(--text-primary);
+        padding: 0.9rem 1.2rem;
+        border-radius: 0.75rem;
+        font-family: inherit;
+        font-size: 0.95rem;
+        transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .form-input:focus {
+        outline: none;
+        border-color: var(--accent-purple);
+        box-shadow: 0 0 10px var(--accent-glow);
+    }
+    .btn-login {
+        width: 100%;
+        background: linear-gradient(135deg, var(--accent-purple) 0%, #7c3aed 100%);
+        border: none;
+        color: #ffffff;
+        padding: 1rem;
+        border-radius: 0.75rem;
+        font-size: 1rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform 0.1s, box-shadow 0.2s;
+        box-shadow: 0 4px 15px var(--accent-glow);
+        margin-top: 1rem;
+    }
+    .btn-login:hover {
+        box-shadow: 0 6px 20px rgba(139, 92, 246, 0.5);
+    }
+    .btn-login:active {
+        transform: scale(0.98);
+    }
+    .error-msg {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+        color: #f87171;
+        padding: 0.8rem 1.2rem;
+        border-radius: 0.75rem;
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="login-card">
+        <div class="login-header">
+            <i data-lucide="shield-alert" style="color: var(--accent-purple); width: 48px; height: 48px; filter: drop-shadow(0 0 8px var(--accent-purple));"></i>
+            <h1 class="login-title">ARSTrader</h1>
+            <p class="login-subtitle">Entre com as suas credenciais de administrador</p>
+        </div>
+
+        {% if error %}
+        <div class="error-msg">
+            <i data-lucide="alert-triangle" style="width: 18px; height: 18px; flex-shrink: 0;"></i>
+            <span>{{ error }}</span>
+        </div>
+        {% endif %}
+
+        <form method="POST" action="/login">
+            <div class="form-group">
+                <label class="form-label" for="username">Username</label>
+                <input class="form-input" type="text" id="username" name="username" placeholder="Nome de usuário" required autofocus>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">Senha</label>
+                <input class="form-input" type="password" id="password" name="password" placeholder="Sua senha secreta" required>
+            </div>
+            <button class="btn-login" type="submit">Autenticar</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

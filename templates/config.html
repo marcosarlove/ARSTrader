@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+
+{% block title %}Configurações do Robô{% endblock %}
+
+{% block extra_css %}
+    .config-container {
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+    }
+    .config-header-desc {
+        background: rgba(139, 92, 246, 0.05);
+        border: 1px solid rgba(139, 92, 246, 0.15);
+        padding: 1.25rem 2rem;
+        border-radius: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        font-size: 0.95rem;
+        color: var(--text-secondary);
+    }
+    .config-grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 1.5rem;
+    }
+    .config-section {
+        grid-column: span 6;
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 1rem;
+        padding: 2rem;
+        backdrop-filter: blur(16px);
+    }
+    .config-section.full-width {
+        grid-column: span 12;
+    }
+    @media (max-width: 1024px) {
+        .config-section {
+            grid-column: span 12;
+        }
+    }
+    .section-title {
+        font-size: 1.1rem;
+        font-weight: 700;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid var(--card-border);
+        padding-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: #ffffff;
+    }
+    .form-row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+    }
+    .form-group.full {
+        grid-column: span 2;
+    }
+    .form-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .form-input, .form-select {
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        color: var(--text-primary);
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        font-family: inherit;
+        font-size: 0.9rem;
+        transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .form-input:focus, .form-select:focus {
+        outline: none;
+        border-color: var(--accent-purple);
+        box-shadow: 0 0 8px var(--accent-glow);
+    }
+    .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        cursor: pointer;
+        user-select: none;
+        padding: 0.75rem 0;
+    }
+    .checkbox-input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent-purple);
+        cursor: pointer;
+    }
+    .checkbox-label {
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    .module-card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--card-border);
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+    .module-card:last-child {
+        margin-bottom: 0;
+    }
+    .module-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+    .module-title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .sudo-bar {
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid var(--accent-purple);
+        padding: 1.5rem 2.5rem;
+        border-radius: 1rem;
+        margin-top: 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 2rem;
+        box-shadow: 0 10px 30px var(--accent-glow);
+        backdrop-filter: blur(10px);
+    }
+    @media (max-width: 768px) {
+        .sudo-bar {
+            flex-direction: column;
+            gap: 1.25rem;
+            align-items: stretch;
+        }
+    }
+    .sudo-info {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+    .sudo-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #ffffff;
+    }
+    .sudo-desc {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+    }
+    .sudo-actions {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    .btn-submit {
+        background: linear-gradient(135deg, var(--accent-purple) 0%, #7c3aed 100%);
+        border: none;
+        color: #ffffff;
+        padding: 0.85rem 1.75rem;
+        border-radius: 0.5rem;
+        font-weight: 700;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: transform 0.1s, box-shadow 0.2s;
+        box-shadow: 0 4px 15px var(--accent-glow);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .btn-submit:hover {
+        box-shadow: 0 6px 20px rgba(139, 92, 246, 0.5);
+    }
+    .btn-submit:active {
+        transform: scale(0.98);
+    }
+{% endblock %}
+
+{% block content %}
+<form method="POST" action="/config" class="config-container">
+    {% if error %}
+    <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; padding: 1rem 1.5rem; border-radius: 0.75rem; display: flex; align-items: center; gap: 0.75rem;">
+        <i data-lucide="alert-triangle" style="width: 20px; height: 20px; color: #f87171;"></i>
+        <span>{{ error }}</span>
+    </div>
+    {% endif %}
+    {% if success %}
+    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; padding: 1rem 1.5rem; border-radius: 0.75rem; display: flex; align-items: center; gap: 0.75rem;">
+        <i data-lucide="check-circle" style="width: 20px; height: 20px; color: #34d399;"></i>
+        <span>{{ success }}</span>
+    </div>
+    {% endif %}
+
+    <div class="config-header-desc">
+        <i data-lucide="info" style="color: var(--accent-purple); width: 24px; height: 24px; flex-shrink: 0;"></i>
+        <span>
+            <strong>Aviso de Restrições:</strong> Não é permitida a alteração da exchange ativa enquanto houver ordens abertas na carteira. Também não é possível desligar uma estratégia que possua ordens abertas com fechamento dinâmico/manual ativo.
+        </span>
+    </div>
+
+    <div class="config-grid">
+        <!-- System Config -->
+        <section class="config-section">
+            <h2 class="section-title">
+                <i data-lucide="settings" style="width: 20px; height: 20px; color: var(--accent-purple);"></i>
+                Definições do Sistema
+            </h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="system-env">Ambiente</label>
+                    <select class="form-select" id="system-env" name="system.environment">
+                        <option value="sandbox" {% if raw_config.system.environment == 'sandbox' %}selected{% endif %}>Sandbox (Teste)</option>
+                        <option value="production" {% if raw_config.system.environment == 'production' %}selected{% endif %}>Production (Real)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="system-timeout">Timeout Heartbeat (s)</label>
+                    <input class="form-input" type="number" id="system-timeout" name="system.heartbeat_timeout" value="{{ raw_config.system.heartbeat_timeout }}" required>
+                </div>
+                <div class="form-group full">
+                    <label class="form-label" for="system-latency">Latência Máxima de Sinal Tolerada (ms)</label>
+                    <input class="form-input" type="number" id="system-latency" name="system.max_signal_latency_ms" value="{{ raw_config.system.max_signal_latency_ms }}" required>
+                </div>
+            </div>
+        </section>
+
+        <!-- Web Server Config -->
+        <section class="config-section">
+            <h2 class="section-title">
+                <i data-lucide="globe" style="width: 20px; height: 20px; color: var(--accent-purple);"></i>
+                Interface Web / Dashboard
+            </h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="web-host">IP Host de Escuta</label>
+                    <input class="form-input" type="text" id="web-host" name="web_server.host" value="{{ raw_config.web_server.host }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="web-port">Porta de Escuta</label>
+                    <input class="form-input" type="number" id="web-port" name="web_server.port" value="{{ raw_config.web_server.port }}" required>
+                </div>
+            </div>
+        </section>
+
+        <!-- Risk Manager Config -->
+        <section class="config-section full-width">
+            <h2 class="section-title">
+                <i data-lucide="shield" style="width: 20px; height: 20px; color: var(--accent-purple);"></i>
+                Gerenciador de Risco Financeiro Centralizado
+            </h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="risk-exchange">Exchange de Execução</label>
+                    <select class="form-select" id="risk-exchange" name="global_risk.execution_exchange">
+                        {% for ex_name in raw_config.exchanges.keys() %}
+                        <option value="{{ ex_name }}" {% if raw_config.global_risk.execution_exchange == ex_name %}selected{% endif %}>{{ ex_name|upper }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-max-loss-pct">Max Daily Loss (%)</label>
+                    <input class="form-input" type="number" step="0.01" id="risk-max-loss-pct" name="global_risk.max_daily_loss_pct" value="{{ raw_config.global_risk.max_daily_loss_pct }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-max-loss-limit">Limite Max Loss Diário Físico (USDT)</label>
+                    <input class="form-input" type="number" step="0.1" id="risk-max-loss-limit" name="global_risk.max_daily_loss_limit" value="{{ raw_config.global_risk.max_daily_loss_limit }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-max-trades">Max Trades Simultâneos</label>
+                    <input class="form-input" type="number" id="risk-max-trades" name="global_risk.max_simultaneous_trades" value="{{ raw_config.global_risk.max_simultaneous_trades }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-risk-pct">Fração do Saldo por Operação (%)</label>
+                    <input class="form-input" type="number" step="0.01" id="risk-risk-pct" name="global_risk.trade_risk_percentage" value="{{ raw_config.global_risk.trade_risk_percentage }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-sl-pct">Stop Loss Padrão (%)</label>
+                    <input class="form-input" type="number" step="0.01" id="risk-sl-pct" name="global_risk.default_stop_loss_pct" value="{{ raw_config.global_risk.default_stop_loss_pct }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-tp-pct">Take Profit Padrão (%)</label>
+                    <input class="form-input" type="number" step="0.01" id="risk-tp-pct" name="global_risk.default_take_profit_pct" value="{{ raw_config.global_risk.default_take_profit_pct }}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="risk-safety-sl">Stop Loss de Segurança Manual (%)</label>
+                    <input class="form-input" type="number" step="0.01" id="risk-safety-sl" name="global_risk.default_safety_stop_loss_pct" value="{{ raw_config.global_risk.default_safety_stop_loss_pct }}" required>
+                </div>
+            </div>
+        </section>
+
+        <!-- Exchanges Connection Toggles -->
+        <section class="config-section">
+            <h2 class="section-title">
+                <i data-lucide="link" style="width: 20px; height: 20px; color: var(--accent-purple);"></i>
+                Conexões com Exchanges
+            </h2>
+            {% for ex_name, ex_data in raw_config.exchanges.items() %}
+            <div class="module-card">
+                <div class="module-header">
+                    <span class="module-title">{{ ex_name }}</span>
+                    <label class="checkbox-group">
+                        <input type="checkbox" class="checkbox-input" name="exchanges.{{ ex_name }}.enabled" value="true" {% if ex_data.enabled %}checked{% endif %}>
+                        <span class="checkbox-label">Habilitada</span>
+                    </label>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input class="form-input" type="text" name="exchanges.{{ ex_name }}.api_key" value="{{ ex_data.api_key }}" placeholder="Mantida via Env ou vazia">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Secret</label>
+                        <input class="form-input" type="password" name="exchanges.{{ ex_name }}.secret" value="{{ ex_data.secret }}" placeholder="Mantida via Env ou vazia">
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </section>
+
+        <!-- Strategy Modules Config -->
+        <section class="config-section">
+            <h2 class="section-title">
+                <i data-lucide="cpu" style="width: 20px; height: 20px; color: var(--accent-purple);"></i>
+                Configurações das Estratégias
+            </h2>
+            {% for name, mod in raw_config.modules.items() %}
+            <div class="module-card">
+                <div class="module-header">
+                    <span class="module-title">{{ name }}</span>
+                    <label class="checkbox-group">
+                        <input type="checkbox" class="checkbox-input" name="modules.{{ name }}.enabled" value="true" {% if mod.enabled %}checked{% endif %}>
+                        <span class="checkbox-label">Ativa</span>
+                    </label>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Intervalo de Heartbeat (s)</label>
+                        <input class="form-input" type="number" name="modules.{{ name }}.heartbeat_interval" value="{{ mod.heartbeat_interval }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Mercados Alvo (Pattern)</label>
+                        <input class="form-input" type="text" name="modules.{{ name }}.restrictions.target_markets" value="{{ mod.restrictions.target_markets if mod.restrictions else '*' }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Exchanges Permitidas</label>
+                        <input class="form-input" type="text" name="modules.{{ name }}.restrictions.allowed_exchanges" value="{{ mod.restrictions.allowed_exchanges if mod.restrictions else '*' }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Horário de Ativação</label>
+                        <input class="form-input" type="text" name="modules.{{ name }}.restrictions.activation_time" value="{{ mod.restrictions.activation_time if mod.restrictions else '' }}" placeholder="ex: 07:00:00">
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </section>
+    </div>
+
+    <!-- Sudo bar: requires password confirmation -->
+    <div class="sudo-bar">
+        <div class="sudo-info">
+            <span class="sudo-title">Confirme as Alterações</span>
+            <span class="sudo-desc">Insira a sua senha para persistir e ativar as alterações.</span>
+        </div>
+        <div class="sudo-actions">
+            <div class="form-group" style="min-width: 250px;">
+                <input class="form-input" type="password" name="sudo_password" placeholder="Senha do Administrador" required>
+            </div>
+            <button class="btn-submit" type="submit">
+                <i data-lucide="save" style="width: 18px; height: 18px;"></i> Gravar & Reiniciar
+            </button>
+        </div>
+    </div>
+</form>
+{% endblock %}

@@ -143,3 +143,42 @@ class TrafficController:
         )
 
         return True, standardized_payload, "VALIDATED"
+
+    def process_control_packet(
+        self, raw_data: str
+    ) -> Tuple[bool, Optional[dict], str]:
+        """
+        Realiza o parse e a validação de pacotes de sinal do tipo CONTROL.
+
+        :param raw_data: String bruta recebida do Socket TCP.
+        :return: Tuple[Sucesso(bool), PayloadPadronizado(dict ou None), Veredito(str)]
+        """
+        try:
+            raw_json = json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.critical(
+                f"[Comms] Falha de decodificação do sinal de controle: {e}"
+            )
+            return False, None, "CRITICAL_PARSE_ERROR"
+
+        # Campos obrigatórios para o sinal do tipo CONTROL
+        required_fields = {"type", "action", "strategy_name"}
+        missing_fields = required_fields - raw_json.keys()
+        if missing_fields:
+            return False, raw_json, "INVALID_CONTROL_SCHEMA"
+
+        standardized_payload = {
+            "type": str(raw_json["type"]).strip().upper(),
+            "action": str(raw_json["action"]).strip().upper(),
+            "strategy_name": str(raw_json["strategy_name"]).strip().lower(),
+            "pid": int(raw_json.get("pid", 0)),
+            "details": str(raw_json.get("details", "")).strip(),
+        }
+
+        # Validação das ações permitidas
+        allowed_actions = {"BOOT", "READY", "HEARTBEAT", "SHUTDOWN", "ERROR"}
+        if standardized_payload["action"] not in allowed_actions:
+            return False, standardized_payload, "INVALID_CONTROL_ACTION"
+
+        return True, standardized_payload, "VALIDATED"
+
