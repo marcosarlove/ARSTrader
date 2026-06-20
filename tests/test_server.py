@@ -140,7 +140,7 @@ async def test_signal_server_order_callback(unused_port):
     """Testa o disparo correto do callback de ordem (assíncrono por design)."""
     control_mock = MagicMock()
     
-    async def mock_on_order(message_str, promise):
+    async def mock_on_order(payload, promise):
         promise.set_result({"status": "SUCCESS"})
         
     order_mock = AsyncMock(side_effect=mock_on_order)
@@ -177,7 +177,9 @@ async def test_signal_server_order_callback(unused_port):
 
     order_mock.assert_called_once()
     called_args = order_mock.call_args[0]
-    assert json.loads(called_args[0]) == payload
+    assert called_args[0]["guid"] == payload["guid"]
+    assert called_args[0]["current_price"] == payload["price"]
+    assert called_args[0]["operation"] == payload["operation"]
     assert isinstance(called_args[1], asyncio.Future)
 
     writer.close()

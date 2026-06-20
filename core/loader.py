@@ -85,7 +85,12 @@ class ModuleLoader:
             storage.register_module(mod_name)
             storage.loader[mod_name].status = "SPAWNING"
 
-            await self._spawn_process(mod_name, mod_config.path, mod_config.class_name)
+            await self._spawn_process(
+                mod_name,
+                mod_config.path,
+                mod_config.class_name,
+                getattr(mod_config, "heartbeat_interval", None),
+            )
 
         # Inicia a tarefa em background que monitora a saúde física e os batimentos dos processos
         self._monitor_task = asyncio.create_task(self._monitor_processes())
@@ -163,7 +168,13 @@ class ModuleLoader:
             self._last_heartbeats.pop(strategy_name, None)
             await self._recover_module(strategy_name)
 
-    async def _spawn_process(self, name: str, path: str, class_name: str) -> None:
+    async def _spawn_process(
+        self,
+        name: str,
+        path: str,
+        class_name: str,
+        heartbeat_interval: Optional[float] = None,
+    ) -> None:
         """Gera um subprocesso do Linux injetando o IP e Porta do servidor central."""
         # Monta o caminho relativo da estratégia (ex: modules/morningstar/runner.py)
         runner_path = os.path.join("modules", path, "runner.py")
@@ -179,6 +190,9 @@ class ModuleLoader:
                 f"[Loader] A iniciar subprocesso para a estratégia: {name.upper()}..."
             )
 
+            if not isinstance(heartbeat_interval, (int, float)) or heartbeat_interval <= 0:
+                heartbeat_interval = self._heartbeat_timeout / 2.0
+
             # Executa o subprocesso passando os argumentos que a estratégia precisa para se sincronizar
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,  # Garante o uso do mesmo interpretador do ambiente virtual (venv)
@@ -191,6 +205,8 @@ class ModuleLoader:
                 self.server_host,
                 "--core-port",
                 str(self.server_port),
+                "--heartbeat-interval",
+                str(float(heartbeat_interval)),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -316,7 +332,12 @@ class ModuleLoader:
                 storage.loader[name].status = "RECOVERING"
 
             mod_config = self.config.modules[name]
-            await self._spawn_process(name, mod_config.path, mod_config.class_name)
+            await self._spawn_process(
+                name,
+                mod_config.path,
+                mod_config.class_name,
+                getattr(mod_config, "heartbeat_interval", None),
+            )
 
     async def sync_modules(self) -> None:
         """
@@ -336,7 +357,12 @@ class ModuleLoader:
                 logger.info(f"[Loader] A ativar estratégia '{mod_name}' em tempo real...")
                 storage.register_module(mod_name)
                 storage.loader[mod_name].status = "SPAWNING"
-                await self._spawn_process(mod_name, mod_config.path, mod_config.class_name)
+                await self._spawn_process(
+                    mod_name,
+                    mod_config.path,
+                    mod_config.class_name,
+                    getattr(mod_config, "heartbeat_interval", None),
+                )
             elif not is_active and has_proc:
                 logger.info(f"[Loader] A desativar estratégia '{mod_name}' em tempo real...")
                 if mod_name in storage.loader:

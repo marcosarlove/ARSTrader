@@ -54,6 +54,9 @@ class OperationModel(Base):
     amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(24, 12), nullable=True
     )  # NULL se rejeitado antes do Sizing no Wallet
+    exchange_order_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )  # ID físico da ordem de entrada retornado pela exchange
     stop_loss: Mapped[Optional[Decimal]] = mapped_column(Numeric(24, 12), nullable=True)
     take_profit: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(24, 12), nullable=True
@@ -80,6 +83,7 @@ class OperationModel(Base):
     __table_args__ = (
         Index("idx_ops_guid", "guid"),
         Index("idx_ops_target_guid", "target_guid"),
+        Index("idx_ops_exchange_order_id", "exchange_order_id"),
         Index("idx_ops_symbol_time", "symbol", "timestamp"),
         Index("idx_ops_status", "status"),
         Index("idx_ops_strategy", "strategy_name"),
@@ -140,4 +144,3 @@ class UserModel(Base):
     __table_args__ = (
         Index("idx_users_username", "username"),
     )
-

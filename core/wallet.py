@@ -62,6 +62,19 @@ class WalletController:
         # Set para evitar processamento de mensagens duplicadas da Exchange
         self._processed_order_ids = set()
 
+        # Protege transições críticas de estado em RAM: risk-check + claim
+        # do símbolo + rollback por dono do lock.
+        self._state_lock = asyncio.Lock()
+        self._symbol_locks: Dict[str, asyncio.Lock] = {}
+        self._capacity_condition = asyncio.Condition()
+        self._pending_open_guids = set()
+
+        # Capabilities de proteção detectadas no boot. O fallback conservador é
+        # usar ordens separadas, pois attached SL/TP não é universal.
+        self._supports_attached_sl_tp = False
+        self._supports_stop_loss_price = False
+        self._supports_take_profit_price = False
+
     def register_order_close_listener(self, listener: Callable[[dict], Any]) -> None:
         """Adiciona um listener para receber atualizações de fechamento de ordens."""
         if not any(id(x) == id(listener) for x in self._order_close_listeners):
@@ -87,6 +100,112 @@ class WalletController:
     def active_positions(self) -> dict:
         return storage.wallet.active_positions
 
+    def _lock_owner(self, symbol: str) -> Optional[str]:
+        owner = storage.wallet.active_locks.get(symbol)
+        return str(owner) if owner is not None else None
+
+    async def _get_symbol_lock(self, symbol: str) -> asyncio.Lock:
+        async with self._state_lock:
+            if symbol not in self._symbol_locks:
+                self._symbol_locks[symbol] = asyncio.Lock()
+            return self._symbol_locks[symbol]
+
+    async def _reserve_open_slot(self, symbol: str, guid: str, max_simultaneous: int, max_loss: float) -> Optional[str]:
+        """Reserva capacidade global sem publicar estado fantasma em active_locks."""
+        async with self._capacity_condition:
+            while True:
+                if storage.wallet.daily_loss_counter >= max_loss:
+                    return "DAILY_LOSS_LIMIT_EXCEEDED"
+
+                if symbol in storage.wallet.active_locks:
+                    return "ASSET_LOCK_ACTIVE"
+
+                active_count = len(storage.wallet.active_locks)
+                if active_count >= max_simultaneous:
+                    return "LIMIT_SIMULTANEOUS_TRADES_EXCEEDED"
+
+                if active_count + len(self._pending_open_guids) < max_simultaneous:
+                    self._pending_open_guids.add(guid)
+                    return None
+
+                await self._capacity_condition.wait()
+
+    async def _release_open_slot(self, guid: str) -> None:
+        async with self._capacity_condition:
+            self._pending_open_guids.discard(guid)
+            self._capacity_condition.notify_all()
+
+    async def _mark_position_open(self, symbol: str, guid: str) -> None:
+        async with self._state_lock:
+            storage.wallet.active_locks[symbol] = guid
+            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+        async with self._capacity_condition:
+            self._capacity_condition.notify_all()
+
+    async def _release_symbol_lock(self, symbol: str, owner_guid: str) -> None:
+        """Libera um lock apenas se quem está liberando ainda for o dono."""
+        async with self._state_lock:
+            owner = storage.wallet.active_locks.get(symbol)
+            if owner == owner_guid:
+                storage.wallet.active_locks.pop(symbol, None)
+                storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+        async with self._capacity_condition:
+            self._capacity_condition.notify_all()
+
+    async def _ensure_position_lock(self, symbol: str, owner_guid: str) -> None:
+        """Garante lock para posição reconciliada/aberta sem sobrescrever outro dono."""
+        async with self._state_lock:
+            if symbol not in storage.wallet.active_locks:
+                storage.wallet.active_locks[symbol] = owner_guid
+                storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+
+    def _risk_float(self, name: str, default: float) -> float:
+        """Lê um valor numérico da configuração de risco com fallback defensivo."""
+        try:
+            return float(getattr(self.config.global_risk, name))
+        except Exception:
+            return default
+
+    async def _maybe_load_markets(self) -> None:
+        """Carrega mercados se a exchange expõe essa chamada."""
+        load_markets = getattr(self.exchange, "load_markets", None)
+        if not load_markets:
+            return
+        res = load_markets()
+        if inspect.iscoroutine(res):
+            await res
+
+    def _feature_value(self, symbol: str, method: str, feature: str) -> bool:
+        """Consulta suporte de feature no CCXT quando disponível."""
+        feature_value = getattr(self.exchange, "feature_value", None)
+        if not feature_value:
+            return False
+        try:
+            return bool(feature_value(symbol, method, feature))
+        except Exception as e:
+            logger.debug(f"[Wallet] Feature CCXT indisponível para {symbol}/{method}/{feature}: {e}")
+            return False
+
+    def _detect_protection_capabilities(self, symbol: Optional[str] = None) -> None:
+        """Detecta se a exchange suporta SL/TP anexado e parâmetros unificados de proteção."""
+        probe_symbol = symbol or "BTC/USDT:USDT"
+        self._supports_attached_sl_tp = self._feature_value(
+            probe_symbol, "createOrder", "attachedStopLossTakeProfit"
+        )
+        self._supports_stop_loss_price = self._feature_value(
+            probe_symbol, "createOrder", "stopLossPrice"
+        )
+        self._supports_take_profit_price = self._feature_value(
+            probe_symbol, "createOrder", "takeProfitPrice"
+        )
+        logger.info(
+            "[Wallet] Capabilities SL/TP detectadas para %s: attached=%s, stopLossPrice=%s, takeProfitPrice=%s",
+            probe_symbol,
+            self._supports_attached_sl_tp,
+            self._supports_stop_loss_price,
+            self._supports_take_profit_price,
+        )
+
     async def initialize_and_sync(
         self, open_operations_db: List[dict], current_daily_loss: float
     ) -> List[dict]:
@@ -105,6 +224,8 @@ class WalletController:
         if not isinstance(self.exchange, Mock):
             try:
                 logger.info("[Wallet] Validando credenciais com a Exchange via REST API...")
+                await self._maybe_load_markets()
+                self._detect_protection_capabilities()
                 balance_data = await self.exchange.fetch_balance()
                 free_balance = balance_data.get("free", {})
                 allowed_bases = ["USDT", "USDC", "USD"]
@@ -117,6 +238,8 @@ class WalletController:
             except ccxt.AuthenticationError as e:
                 logger.critical(f"[Wallet] Falha crítica de autenticação na Exchange (API Keys inválidas): {e}")
                 raise e
+        else:
+            self._detect_protection_capabilities()
 
         # Inicializa o contador diário de perda e limite na RAM para telemetria
         storage.wallet.daily_loss_counter = current_daily_loss
@@ -155,7 +278,7 @@ class WalletController:
 
             if status == "open":
                 # Ordem continua aberta: reativa imediatamente lock e posição na RAM
-                storage.wallet.active_locks[symbol] = True
+                await self._ensure_position_lock(symbol, guid)
                 storage.wallet.active_positions[guid] = {
                     "guid": guid,
                     "symbol": symbol,
@@ -167,7 +290,6 @@ class WalletController:
                     "take_profit": op.get("take_profit"),
                     "strategy_name": op.get("strategy_name"),
                 }
-                storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
                 return None
             else:
                 # Ordem foi fechada ou cancelada externamente
@@ -211,7 +333,7 @@ class WalletController:
                 f"[Wallet] Erro crítico ao buscar ordem {order_id} na exchange: {e}. Mantendo como aberta por segurança."
             )
             # Para evitar sobreexposição de risco, mantemos o lock na RAM ativo
-            storage.wallet.active_locks[symbol] = True
+            await self._ensure_position_lock(symbol, guid)
             storage.wallet.active_positions[guid] = {
                 "guid": guid,
                 "symbol": symbol,
@@ -223,7 +345,6 @@ class WalletController:
                 "take_profit": op.get("take_profit"),
                 "strategy_name": op.get("strategy_name"),
             }
-            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
             return None
 
     async def _watch_balance_loop(self) -> None:
@@ -334,9 +455,19 @@ class WalletController:
             self._processed_order_ids.add(client_order_id)
 
         # Limpa locks e posições ativas da RAM na hora
-        storage.wallet.active_locks.pop(symbol, None)
+        await self._release_symbol_lock(symbol, guid)
         storage.wallet.active_positions.pop(guid, None)
-        storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+
+        # Se uma ordem protetiva disparou, cancela a contraparte remanescente
+        # para evitar ordens reduce-only órfãs depois do fechamento da posição.
+        protection_order_ids = {
+            "stop_loss_order_id": pos.get("stop_loss_order_id"),
+            "take_profit_order_id": pos.get("take_profit_order_id"),
+        }
+        for key, protection_id in list(protection_order_ids.items()):
+            if protection_id in {order_id, client_order_id}:
+                protection_order_ids[key] = None
+        await self._cancel_protection_orders(symbol, protection_order_ids)
 
         # Limita o tamanho do histórico de processados para evitar leak
         if len(self._processed_order_ids) > 10000:
@@ -436,8 +567,8 @@ class WalletController:
         # Define operação oposta para fechamento de posição
         close_side = "sell" if operation == "BUY" else "buy"
 
-        # Tenta reter o lock temporário ou prossegue
-        storage.wallet.active_locks[symbol] = True
+        # A posição original continua dona do lock durante o fechamento.
+        await self._ensure_position_lock(symbol, target_guid)
 
         logger.info(
             f"[Wallet] Executando fecho de posição para {symbol} ({close_side.upper()}) - Qtd: {amount}"
@@ -454,7 +585,6 @@ class WalletController:
                         f"[Wallet] Ordem de fecho [{guid}] abortada: latência do sinal ({latency_seconds * 1000.0:.2f}ms) "
                         f"excede o limite de {max_latency_ms}ms antes do envio."
                     )
-                    storage.wallet.active_locks.pop(symbol, None)
                     return {
                         "guid": guid,
                         "status": "FAILED",
@@ -502,8 +632,6 @@ class WalletController:
             }
 
         except Exception as e:
-            # Reverte lock em caso de falha de conexão ou rede para o Orchestrator poder tentar novamente
-            storage.wallet.active_locks.pop(symbol, None)
             logger.error(f"[Wallet] Erro na exchange ao fechar posição {target_guid}: {e}")
             return {
                 "guid": guid,
@@ -511,7 +639,139 @@ class WalletController:
                 "reason": f"EXCHANGE_CLOSE_ERROR: {e}",
             }
 
+    async def _create_protection_orders(
+        self,
+        guid: str,
+        symbol: str,
+        operation: str,
+        amount: float,
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+    ) -> Dict[str, Optional[str]]:
+        """Cria ordens protetivas reduce-only para a posição recém-aberta."""
+        close_side = "sell" if operation == "BUY" else "buy"
+        protection_order_ids: Dict[str, Optional[str]] = {
+            "stop_loss_order_id": None,
+            "take_profit_order_id": None,
+        }
+
+        if stop_loss is None or float(stop_loss) <= 0:
+            raise ValueError("STOP_LOSS_REQUIRED")
+
+        try:
+            sl_order = await self.exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side=close_side,
+                amount=amount,
+                price=None,
+                params={
+                    "stopLossPrice": float(stop_loss),
+                    "reduceOnly": "true",
+                },
+            )
+            protection_order_ids["stop_loss_order_id"] = sl_order.get("id")
+
+            if take_profit is not None and float(take_profit) > 0:
+                tp_order = await self.exchange.create_order(
+                    symbol=symbol,
+                    type="market",
+                    side=close_side,
+                    amount=amount,
+                    price=None,
+                    params={
+                        "takeProfitPrice": float(take_profit),
+                        "reduceOnly": "true",
+                    },
+                )
+                protection_order_ids["take_profit_order_id"] = tp_order.get("id")
+        except Exception:
+            await self._cancel_protection_orders(symbol, protection_order_ids)
+            raise
+
+        return protection_order_ids
+
+    async def _cancel_protection_orders(self, symbol: str, protection_order_ids: Dict[str, Optional[str]]) -> None:
+        """Cancela ordens protetivas já criadas durante rollback de proteção."""
+        for order_id in protection_order_ids.values():
+            if not order_id:
+                continue
+            try:
+                await self.exchange.cancel_order(order_id, symbol)
+            except Exception as e:
+                logger.warning(f"[Wallet] Falha ao cancelar ordem protetiva {order_id}: {e}")
+
+    async def _emergency_close_unprotected_position(
+        self,
+        guid: str,
+        symbol: str,
+        operation: str,
+        amount: float,
+    ) -> None:
+        """Fecha a mercado uma posição cuja criação de SL/TP falhou."""
+        close_side = "sell" if operation == "BUY" else "buy"
+        await self.exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=close_side,
+            amount=amount,
+            params={"reduceOnly": "true"},
+        )
+        await self._release_symbol_lock(symbol, guid)
+        storage.wallet.active_positions.pop(guid, None)
+
+    def _build_attached_protection_params(
+        self,
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+    ) -> Dict[str, float]:
+        """Monta os parâmetros de proteção anexada para create_order."""
+        if stop_loss is None or float(stop_loss) <= 0:
+            raise ValueError("STOP_LOSS_REQUIRED")
+
+        params: Dict[str, float] = {"stopLossPrice": float(stop_loss)}
+        if take_profit is not None and float(take_profit) > 0:
+            params["takeProfitPrice"] = float(take_profit)
+        return params
+
+    def _extract_attached_protection_ids(self, order: dict) -> Dict[str, Optional[str]]:
+        """Extrai IDs de SL/TP anexados quando a exchange os retorna no order payload."""
+        stop_loss_payload = order.get("stopLoss")
+        take_profit_payload = order.get("takeProfit")
+        return {
+            "stop_loss_order_id": order.get("stopLossOrderId") or (
+                stop_loss_payload.get("id") if isinstance(stop_loss_payload, dict) else None
+            ),
+            "take_profit_order_id": order.get("takeProfitOrderId") or (
+                take_profit_payload.get("id") if isinstance(take_profit_payload, dict) else None
+            ),
+        }
+
+    def _stop_loss_exceeds_max_risk(
+        self,
+        operation: str,
+        current_price: float,
+        stop_loss: Optional[float],
+    ) -> bool:
+        """Valida se o SL informado implica risco maior que o máximo global."""
+        if stop_loss is None or stop_loss <= 0 or current_price <= 0:
+            return True
+
+        max_sl_pct = self._risk_float("default_stop_loss_pct", 1.5)
+        if operation == "BUY":
+            max_allowed_sl = current_price * (1.0 - max_sl_pct / 100.0)
+            return stop_loss < max_allowed_sl
+
+        max_allowed_sl = current_price * (1.0 + max_sl_pct / 100.0)
+        return stop_loss > max_allowed_sl
+
     async def _execute_open_order(self, signal: dict) -> dict:
+        symbol = signal["symbol"]
+        symbol_lock = await self._get_symbol_lock(symbol)
+        async with symbol_lock:
+            return await self._execute_open_order_locked(signal)
+
+    async def _execute_open_order_locked(self, signal: dict) -> dict:
         """Processa e executa a abertura de uma nova ordem."""
         guid = signal["guid"]
         symbol = signal["symbol"]
@@ -520,40 +780,26 @@ class WalletController:
         max_sim = self.config.global_risk.max_simultaneous_trades
         max_loss = self.config.global_risk.max_daily_loss_limit
 
-        # 1. Trava de risco tripla síncrona
-        if len(storage.wallet.active_locks) >= max_sim:
-            logger.warning(
-                f"[Wallet] Ordem [{guid}] ignorada: limite de trades simultâneos ({max_sim}) atingido."
-            )
+        # 1. Trava de risco tripla + reserva de capacidade global.
+        rejection_reason = await self._reserve_open_slot(symbol, guid, max_sim, max_loss)
+        if rejection_reason:
+            if rejection_reason == "LIMIT_SIMULTANEOUS_TRADES_EXCEEDED":
+                logger.warning(
+                    f"[Wallet] Ordem [{guid}] ignorada: limite de trades simultâneos ({max_sim}) atingido."
+                )
+            elif rejection_reason == "DAILY_LOSS_LIMIT_EXCEEDED":
+                logger.warning(
+                    f"[Wallet] Ordem [{guid}] ignorada: limite de perda diária ({max_loss}) excedido."
+                )
+            elif rejection_reason == "ASSET_LOCK_ACTIVE":
+                logger.warning(
+                    f"[Wallet] Ordem [{guid}] ignorada: lock ativo já existente para o símbolo {symbol}."
+                )
             return {
                 "guid": guid,
                 "status": "IGNORED",
-                "reason": "LIMIT_SIMULTANEOUS_TRADES_EXCEEDED",
+                "reason": rejection_reason,
             }
-
-        if storage.wallet.daily_loss_counter >= max_loss:
-            logger.warning(
-                f"[Wallet] Ordem [{guid}] ignorada: limite de perda diária ({max_loss}) excedido."
-            )
-            return {
-                "guid": guid,
-                "status": "IGNORED",
-                "reason": "DAILY_LOSS_LIMIT_EXCEEDED",
-            }
-
-        if symbol in storage.wallet.active_locks:
-            logger.warning(
-                f"[Wallet] Ordem [{guid}] ignorada: lock ativo já existente para o símbolo {symbol}."
-            )
-            return {
-                "guid": guid,
-                "status": "IGNORED",
-                "reason": "ASSET_LOCK_ACTIVE",
-            }
-
-        # Cravamos o lock na RAM imediatamente no primeiro segundo em que o par passa no teste
-        storage.wallet.active_locks[symbol] = True
-        storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
 
         try:
             # Verificação de latência de segurança na Wallet antes de processar/enviar a ordem
@@ -566,8 +812,7 @@ class WalletController:
                         f"[Wallet] Ordem [{guid}] abortada: latência do sinal ({latency_seconds * 1000.0:.2f}ms) "
                         f"excede o limite de {max_latency_ms}ms antes do envio."
                     )
-                    storage.wallet.active_locks.pop(symbol, None)
-                    storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+                    await self._release_symbol_lock(symbol, guid)
                     return {
                         "guid": guid,
                         "status": "IGNORED",
@@ -577,10 +822,11 @@ class WalletController:
             # 2. Definição do Stop Loss e Take Profit
             current_price = float(signal["current_price"])
             ignore_fields = signal.get("ignore_fields", [])
+            strategy_provided_stop_loss = False
             
             # Caso 1: Fechamento Manual (ignore_fields contendo stop_loss e take_profit)
             if "stop_loss" in ignore_fields and "take_profit" in ignore_fields:
-                safety_pct = self.config.global_risk.default_safety_stop_loss_pct
+                safety_pct = self._risk_float("default_safety_stop_loss_pct", 5.0)
                 if operation == "BUY":
                     stop_loss = current_price * (1.0 - safety_pct / 100.0)
                 else:
@@ -591,10 +837,11 @@ class WalletController:
                 # Caso 2: Ordem normal (gerencia risco utilizando alvos informados ou padrão)
                 sl_val = signal.get("stop_loss")
                 if sl_val is not None and float(sl_val) > 0:
+                    strategy_provided_stop_loss = True
                     stop_loss = float(sl_val)
                 else:
                     # Target padrão
-                    sl_pct = self.config.global_risk.default_stop_loss_pct
+                    sl_pct = self._risk_float("default_stop_loss_pct", 1.5)
                     if operation == "BUY":
                         stop_loss = current_price * (1.0 - sl_pct / 100.0)
                     else:
@@ -605,11 +852,22 @@ class WalletController:
                     take_profit = float(tp_val)
                 else:
                     # Target padrão
-                    tp_pct = self.config.global_risk.default_take_profit_pct
+                    tp_pct = self._risk_float("default_take_profit_pct", 3.0)
                     if operation == "BUY":
                         take_profit = current_price * (1.0 + tp_pct / 100.0)
                     else:
                         take_profit = current_price * (1.0 - tp_pct / 100.0)
+
+            if strategy_provided_stop_loss and self._stop_loss_exceeds_max_risk(operation, current_price, stop_loss):
+                logger.warning(
+                    f"[Wallet] Ordem [{guid}] ignorada: stop loss excede o risco máximo permitido."
+                )
+                await self._release_symbol_lock(symbol, guid)
+                return {
+                    "guid": guid,
+                    "status": "IGNORED",
+                    "reason": "STOP_LOSS_EXCEEDS_MAX_RISK",
+                }
 
             # 3. Dimensionamento de Lote Dinâmico (Sizing)
             available_balance = storage.wallet.balance
@@ -617,8 +875,7 @@ class WalletController:
             trade_value = available_balance * risk_pct
 
             if current_price <= 0:
-                storage.wallet.active_locks.pop(symbol, None)
-                storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+                await self._release_symbol_lock(symbol, guid)
                 return {
                     "guid": guid,
                     "status": "FAILED",
@@ -649,8 +906,7 @@ class WalletController:
                     f"[Wallet] Ordem [{guid}] ignorada: saldo insuficiente para atender lote mínimo. "
                     f"Saldo: {available_balance}, Requerido: {amount * current_price}"
                 )
-                storage.wallet.active_locks.pop(symbol, None)
-                storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+                await self._release_symbol_lock(symbol, guid)
                 return {
                     "guid": guid,
                     "status": "IGNORED",
@@ -676,15 +932,75 @@ class WalletController:
                 f"[Wallet] Disparando ordem de mercado para {symbol} ({operation}) - Quantidade: {amount:.6f}"
             )
 
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=operation.lower(),
-                amount=amount,
+            use_attached_protection = (
+                self._supports_attached_sl_tp
+                and self._supports_stop_loss_price
+                and (take_profit is None or self._supports_take_profit_price)
             )
+
+            entry_params = {}
+            if use_attached_protection:
+                entry_params = self._build_attached_protection_params(stop_loss, take_profit)
+
+            entry_kwargs = {
+                "symbol": symbol,
+                "type": "market",
+                "side": operation.lower(),
+                "amount": amount,
+            }
+            if entry_params:
+                entry_kwargs["params"] = entry_params
+
+            order = await self.exchange.create_order(**entry_kwargs)
 
             order_id = order.get("id")
             exec_price = order.get("price") or order.get("average") or current_price
+
+            protection_order_ids: Dict[str, Optional[str]] = {
+                "stop_loss_order_id": None,
+                "take_profit_order_id": None,
+            }
+
+            if use_attached_protection:
+                protection_order_ids = self._extract_attached_protection_ids(order)
+                logger.info(f"[Wallet] Ordem [{guid}] aberta com SL/TP anexado na requisição de entrada.")
+            else:
+                try:
+                    protection_order_ids = await self._create_protection_orders(
+                        guid=guid,
+                        symbol=symbol,
+                        operation=operation,
+                        amount=amount,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                except Exception as protection_err:
+                    logger.critical(
+                        f"[Wallet] Falha ao criar SL/TP para {guid}. Fechando posição desprotegida: {protection_err}"
+                    )
+                    await self._cancel_protection_orders(symbol, protection_order_ids)
+                    try:
+                        await self._emergency_close_unprotected_position(guid, symbol, operation, amount)
+                    except Exception as close_err:
+                        logger.critical(
+                            f"[Wallet] Falha ao fechar posição desprotegida {guid}: {close_err}"
+                        )
+                        return {
+                            "guid": guid,
+                            "status": "FAILED",
+                            "amount": amount,
+                            "price": exec_price,
+                            "exchange_order_id": order_id,
+                            "reason": f"PROTECTION_ORDER_FAILED_EMERGENCY_CLOSE_FAILED: {protection_err}; {close_err}",
+                        }
+                    return {
+                        "guid": guid,
+                        "status": "FAILED",
+                        "amount": amount,
+                        "price": exec_price,
+                        "exchange_order_id": order_id,
+                        "reason": f"PROTECTION_ORDER_FAILED_POSITION_CLOSED: {protection_err}",
+                    }
 
             # Atualiza no storage com os dados consolidados da Exchange
             storage.wallet.active_positions[guid].update({
@@ -692,8 +1008,9 @@ class WalletController:
                 "price": exec_price,
                 "exchange_order_id": order_id,
                 "status": "OPEN",
+                **protection_order_ids,
             })
-            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
+            await self._mark_position_open(symbol, guid)
 
             logger.log(
                 STATUS_LEVEL_NUM,
@@ -710,9 +1027,8 @@ class WalletController:
             }
 
         except ccxt.InsufficientFunds as e:
-            storage.wallet.active_locks.pop(symbol, None)
+            await self._release_symbol_lock(symbol, guid)
             storage.wallet.active_positions.pop(guid, None)
-            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
             logger.error(f"[Wallet] Saldo insuficiente para {guid}: {e}")
             return {
                 "guid": guid,
@@ -720,9 +1036,8 @@ class WalletController:
                 "reason": "EXCHANGE_INSUFFICIENT_FUNDS",
             }
         except ccxt.NetworkError as e:
-            storage.wallet.active_locks.pop(symbol, None)
+            await self._release_symbol_lock(symbol, guid)
             storage.wallet.active_positions.pop(guid, None)
-            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
             logger.error(f"[Wallet] Erro de rede na execução de {guid}: {e}")
             return {
                 "guid": guid,
@@ -730,15 +1045,16 @@ class WalletController:
                 "reason": f"NETWORK_ERROR: {e}",
             }
         except Exception as e:
-            storage.wallet.active_locks.pop(symbol, None)
+            await self._release_symbol_lock(symbol, guid)
             storage.wallet.active_positions.pop(guid, None)
-            storage.wallet.simultaneous_trades = len(storage.wallet.active_locks)
             logger.error(f"[Wallet] Erro na exchange ao executar {guid}: {e}")
             return {
                 "guid": guid,
                 "status": "FAILED",
                 "reason": f"EXCHANGE_ERROR: {e}",
             }
+        finally:
+            await self._release_open_slot(guid)
 
     async def shutdown(self) -> None:
         """Encerra os loops WebSockets em background de forma limpa."""

@@ -22,7 +22,8 @@ async def test_module_loader_spawn_and_shutdown():
         "morningstar": MagicMock(
             enabled=True,
             path="morningstar",
-            class_name="MorningStar"
+            class_name="MorningStar",
+            heartbeat_interval=2,
         ),
         "eveningstar": MagicMock(
             enabled=False,
@@ -51,6 +52,10 @@ async def test_module_loader_spawn_and_shutdown():
 
             # Deve levantar o morningstar mas ignorar eveningstar (desabilitado)
             mock_exec.assert_called_once()
+            exec_args = mock_exec.call_args.args
+            assert "--heartbeat-interval" in exec_args
+            interval_index = exec_args.index("--heartbeat-interval") + 1
+            assert exec_args[interval_index] == "2.0"
             assert "morningstar" in loader._processes
             assert loader._processes["morningstar"] == mock_process
             assert "eveningstar" not in loader._processes

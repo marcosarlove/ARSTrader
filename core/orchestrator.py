@@ -251,17 +251,14 @@ class GlobalOrchestrator:
         if self.loader:
             await self.loader.handle_control_signal(payload)
 
-    async def on_order_received(self, message_str: str, promise: asyncio.Future) -> None:
+    async def on_order_received(self, signal: dict, promise: asyncio.Future) -> None:
         """
         Callback principal (on_order_cb) do SignalServer para sinais válidos.
         Registra a operação como PENDING e executa-a via WalletController.
         """
-        import json
-        try:
-            signal = json.loads(message_str)
-        except Exception as e:
-            logger.error(f"[Orchestrator] Falha grave ao ler sinal validado: {e}")
-            promise.set_result({"status": "FAILED", "reason": "DECODE_ERROR"})
+        if not isinstance(signal, dict):
+            logger.error("[Orchestrator] Sinal validado chegou em formato inválido.")
+            promise.set_result({"status": "FAILED", "reason": "INVALID_VALIDATED_SIGNAL"})
             return
 
         guid = signal.get("guid")
@@ -299,6 +296,8 @@ class GlobalOrchestrator:
                 op_model.amount = Decimal(str(res["amount"]))
             if "price" in res:
                 op_model.current_price = Decimal(str(res["price"]))
+            if "exchange_order_id" in res:
+                op_model.exchange_order_id = str(res["exchange_order_id"])
 
             # Recupera stop_loss e take_profit calculados dinamicamente na wallet para auditoria
             if self.wallet and hasattr(self.wallet, "active_positions"):

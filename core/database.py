@@ -49,13 +49,13 @@ class DatabaseManager:
         self._is_running = False
 
     async def start(self) -> None:
-        """Inicializa o banco de dados, cria as tabelas e liga o worker em background."""
+        """Inicializa o banco de dados e liga o worker em background.
+
+        O schema é responsabilidade exclusiva do Alembic. Antes de iniciar o bot,
+        execute `alembic upgrade head` no ambiente alvo.
+        """
         logger.log(STATUS_LEVEL_NUM, "[DB] A inicializar o motor de banco de dados assíncrono...")
-        
-        # Cria as tabelas se elas não existirem no PostgreSQL
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        
+
         # Inicia o worker assíncrono em segundo plano
         self._is_running = True
         self._worker_task = asyncio.create_task(self._persistence_worker())
@@ -81,6 +81,7 @@ class DatabaseManager:
                     "guid": op.guid,
                     "symbol": op.symbol,
                     "operation": op.operation,
+                    "exchange_order_id": op.exchange_order_id,
                     "amount": float(op.amount) if op.amount is not None else 0.0,
                     "current_price": float(op.current_price),
                     "stop_loss": float(op.stop_loss) if op.stop_loss is not None else None,

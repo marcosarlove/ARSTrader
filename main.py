@@ -29,10 +29,6 @@ async def create_user_cli(username: str, password: str) -> int:
     db = DatabaseManager()
     print(f"A criar/atualizar o utilizador '{username}'...")
     try:
-        # Garante que as tabelas existem antes de tentar criar
-        async with db.engine.begin() as conn:
-            await conn.run_sync(UserModel.metadata.create_all)
-            
         async with db.session_factory() as session:
             async with session.begin():
                 stmt = select(UserModel).where(UserModel.username == username)
@@ -51,6 +47,7 @@ async def create_user_cli(username: str, password: str) -> int:
         return 0
     except Exception as e:
         print(f"Erro ao criar/atualizar utilizador: {e}")
+        print("Confirme que as migrations foram aplicadas com: alembic upgrade head")
         await db.engine.dispose()
         return 1
 

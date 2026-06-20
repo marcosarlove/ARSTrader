@@ -56,7 +56,7 @@ async def test_wallet_controller_risk_limits():
     storage.wallet.active_locks.clear()
 
     # 3. Teste de trava: Lock ativo no próprio ativo
-    storage.wallet.active_locks["BTC/USDT"] = True
+    storage.wallet.active_locks["BTC/USDT"] = "g-open"
     res = await controller.execute_order(signal)
     assert res["status"] == "IGNORED"
     assert res["reason"] == "ASSET_LOCK_ACTIVE"
@@ -69,6 +69,8 @@ async def test_wallet_controller_sizing_limits():
     config_mock.global_risk.max_simultaneous_trades = 3
     config_mock.global_risk.max_daily_loss_limit = 100.0
     config_mock.global_risk.trade_risk_percentage = 0.10  # 10% de 1000 = 100 USDT de risco
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
 
     exchange_mock = MagicMock()
     exchange_mock.market.return_value = {
@@ -95,9 +97,74 @@ async def test_wallet_controller_sizing_limits():
     assert res["status"] == "EXECUTED"
     assert res["amount"] == 0.01  # Lote mínimo recalculado
     assert res["exchange_order_id"] == "order-123"
-    exchange_mock.create_order.assert_called_once_with(
+    assert exchange_mock.create_order.call_count == 3
+    exchange_mock.create_order.assert_any_call(
         symbol="BTC/USDT", type="market", side="buy", amount=0.01
     )
+    exchange_mock.create_order.assert_any_call(
+        symbol="BTC/USDT",
+        type="market",
+        side="sell",
+        amount=0.01,
+        price=None,
+        params={"stopLossPrice": 49000.0, "reduceOnly": "true"},
+    )
+    exchange_mock.create_order.assert_any_call(
+        symbol="BTC/USDT",
+        type="market",
+        side="sell",
+        amount=0.01,
+        price=None,
+        params={"takeProfitPrice": 52000.0, "reduceOnly": "true"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_attached_sl_tp_when_supported():
+    """Usa SL/TP anexado na ordem de entrada quando o CCXT/Binance declara suporte."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_simultaneous_trades = 3
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.global_risk.trade_risk_percentage = 0.10
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
+
+    exchange_mock = MagicMock()
+    exchange_mock.market.return_value = {}
+    exchange_mock.create_order = AsyncMock(return_value={
+        "id": "entry-1",
+        "price": 50000.0,
+        "status": "closed",
+        "stopLossOrderId": "sl-1",
+        "takeProfitOrderId": "tp-1",
+    })
+
+    controller = WalletController(exchange_mock, config_mock)
+    controller._supports_attached_sl_tp = True
+    controller._supports_stop_loss_price = True
+    controller._supports_take_profit_price = True
+    storage.wallet.balance = 1000.0
+
+    res = await controller.execute_order({
+        "guid": "g-attached",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "current_price": 50000.0,
+    })
+
+    assert res["status"] == "EXECUTED"
+    assert exchange_mock.create_order.call_count == 1
+    exchange_mock.create_order.assert_called_once_with(
+        symbol="BTC/USDT",
+        type="market",
+        side="buy",
+        amount=0.002,
+        params={"stopLossPrice": 49000.0, "takeProfitPrice": 52000.0},
+    )
+
+    pos = storage.wallet.active_positions["g-attached"]
+    assert pos["stop_loss_order_id"] == "sl-1"
+    assert pos["take_profit_order_id"] == "tp-1"
 
 
 @pytest.mark.asyncio
@@ -200,7 +267,7 @@ async def test_wallet_controller_execute_close_order():
     config_mock = MagicMock()
     
     # Configura posição original no storage
-    storage.wallet.active_locks["BTC/USDT"] = True
+    storage.wallet.active_locks["BTC/USDT"] = "g-open"
     storage.wallet.active_positions["g-open"] = {
         "guid": "g-open",
         "symbol": "BTC/USDT",
@@ -297,6 +364,15 @@ async def test_wallet_controller_manual_close_max_risk_stop_loss():
     # 5% de stop loss a partir de 100 = 95.0
     assert pos["stop_loss"] == 95.0
     assert pos["take_profit"] is None
+    assert exchange_mock.create_order.call_count == 2
+    exchange_mock.create_order.assert_any_call(
+        symbol="BTC/USDT",
+        type="market",
+        side="sell",
+        amount=1.0,
+        price=None,
+        params={"stopLossPrice": 95.0, "reduceOnly": "true"},
+    )
 
 
 @pytest.mark.asyncio
@@ -334,6 +410,69 @@ async def test_wallet_controller_open_order_defaults_fallback():
     assert pos["stop_loss"] == 196.0
     # 4% take profit a partir de 200 = 208.0
     assert pos["take_profit"] == 208.0
+    assert exchange_mock.create_order.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_rejects_strategy_stop_loss_above_max_risk_buy():
+    """BUY com SL abaixo do risco máximo global é rejeitado antes da exchange."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_simultaneous_trades = 3
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.global_risk.trade_risk_percentage = 0.10
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
+
+    exchange_mock = MagicMock()
+    exchange_mock.create_order = AsyncMock()
+
+    controller = WalletController(exchange_mock, config_mock)
+    storage.wallet.balance = 1000.0
+
+    res = await controller.execute_order({
+        "guid": "g-risk-buy",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "current_price": 100.0,
+        "stop_loss": 95.0,
+        "take_profit": 104.0,
+    })
+
+    assert res["status"] == "IGNORED"
+    assert res["reason"] == "STOP_LOSS_EXCEEDS_MAX_RISK"
+    exchange_mock.create_order.assert_not_called()
+    assert "BTC/USDT" not in storage.wallet.active_locks
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_rejects_strategy_stop_loss_above_max_risk_sell():
+    """SELL com SL acima do risco máximo global é rejeitado antes da exchange."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_simultaneous_trades = 3
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.global_risk.trade_risk_percentage = 0.10
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
+
+    exchange_mock = MagicMock()
+    exchange_mock.create_order = AsyncMock()
+
+    controller = WalletController(exchange_mock, config_mock)
+    storage.wallet.balance = 1000.0
+
+    res = await controller.execute_order({
+        "guid": "g-risk-sell",
+        "symbol": "BTC/USDT",
+        "operation": "SELL",
+        "current_price": 100.0,
+        "stop_loss": 103.0,
+        "take_profit": 96.0,
+    })
+
+    assert res["status"] == "IGNORED"
+    assert res["reason"] == "STOP_LOSS_EXCEEDS_MAX_RISK"
+    exchange_mock.create_order.assert_not_called()
+    assert "BTC/USDT" not in storage.wallet.active_locks
 
 
 @pytest.mark.asyncio
@@ -379,7 +518,7 @@ async def test_wallet_controller_duplicate_websocket_messages():
     on_close_mock = MagicMock()
     controller = WalletController(exchange_mock, config_mock, on_order_close_cb=on_close_mock)
     
-    storage.wallet.active_locks["BTC/USDT"] = True
+    storage.wallet.active_locks["BTC/USDT"] = "g-pos"
     storage.wallet.active_positions["g-pos"] = {
         "guid": "g-pos",
         "symbol": "BTC/USDT",
@@ -482,6 +621,130 @@ async def test_wallet_controller_concurrent_close_order_pending_open():
 
 
 @pytest.mark.asyncio
+async def test_wallet_controller_concurrent_same_symbol_open_is_single_flight():
+    """Dois sinais simultâneos no mesmo símbolo não podem gerar duas entradas."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_simultaneous_trades = 3
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.global_risk.trade_risk_percentage = 0.10
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
+
+    async def slow_create_order(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return {"id": f"ord-{kwargs.get('side', 'unknown')}", "price": 50000.0, "status": "closed"}
+
+    exchange_mock = MagicMock()
+    exchange_mock.market.return_value = {}
+    exchange_mock.create_order = AsyncMock(side_effect=slow_create_order)
+
+    controller = WalletController(exchange_mock, config_mock)
+    storage.wallet.balance = 1000.0
+
+    signal_a = {
+        "guid": "g-concurrent-a",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "current_price": 50000.0,
+    }
+    signal_b = {
+        "guid": "g-concurrent-b",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "current_price": 50000.0,
+    }
+
+    res_a, res_b = await asyncio.gather(
+        controller.execute_order(signal_a),
+        controller.execute_order(signal_b),
+    )
+
+    statuses = {res_a["guid"]: res_a["status"], res_b["guid"]: res_b["status"]}
+    reasons = {res_a["guid"]: res_a.get("reason"), res_b["guid"]: res_b.get("reason")}
+
+    assert sorted(statuses.values()) == ["EXECUTED", "IGNORED"]
+    ignored_guid = next(g for g, status in statuses.items() if status == "IGNORED")
+    executed_guid = next(g for g, status in statuses.items() if status == "EXECUTED")
+    assert reasons[ignored_guid] == "ASSET_LOCK_ACTIVE"
+    assert storage.wallet.active_locks["BTC/USDT"] == executed_guid
+
+    # Entrada + SL + TP apenas para uma posição.
+    assert exchange_mock.create_order.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_capacity_waits_for_pending_failure():
+    """Sinal de outro ativo aguarda uma reserva pendente falhar antes de usar a vaga."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_simultaneous_trades = 3
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.global_risk.trade_risk_percentage = 0.10
+    config_mock.global_risk.default_stop_loss_pct = 2.0
+    config_mock.global_risk.default_take_profit_pct = 4.0
+
+    storage.wallet.active_locks["SOL/USDT"] = "g-sol"
+    storage.wallet.active_locks["ADA/USDT"] = "g-ada"
+    storage.wallet.simultaneous_trades = 2
+
+    async def create_order_side_effect(*args, **kwargs):
+        await asyncio.sleep(0.02)
+        if kwargs["symbol"] == "BTC/USDT":
+            raise ccxt.InsufficientFunds("insufficient margin")
+        return {"id": f"ord-{kwargs['symbol']}-{kwargs['side']}", "price": 3000.0, "status": "closed"}
+
+    exchange_mock = MagicMock()
+    exchange_mock.market.return_value = {}
+    exchange_mock.create_order = AsyncMock(side_effect=create_order_side_effect)
+
+    controller = WalletController(exchange_mock, config_mock)
+    storage.wallet.balance = 1000.0
+
+    btc_signal = {
+        "guid": "g-btc-fails",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "current_price": 50000.0,
+    }
+    eth_signal = {
+        "guid": "g-eth-waits",
+        "symbol": "ETH/USDT",
+        "operation": "BUY",
+        "current_price": 3000.0,
+    }
+
+    btc_res, eth_res = await asyncio.gather(
+        controller.execute_order(btc_signal),
+        controller.execute_order(eth_signal),
+    )
+
+    assert btc_res["status"] == "FAILED"
+    assert btc_res["reason"] == "EXCHANGE_INSUFFICIENT_FUNDS"
+    assert eth_res["status"] == "EXECUTED"
+    assert storage.wallet.active_locks["ETH/USDT"] == "g-eth-waits"
+    assert "BTC/USDT" not in storage.wallet.active_locks
+    assert storage.wallet.simultaneous_trades == 3
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_release_lock_only_by_owner():
+    """Rollback de uma ordem não pode liberar lock que já pertence a outro guid."""
+    config_mock = MagicMock()
+    exchange_mock = MagicMock()
+    controller = WalletController(exchange_mock, config_mock)
+
+    storage.wallet.active_locks["BTC/USDT"] = "owner-b"
+    storage.wallet.simultaneous_trades = 1
+
+    await controller._release_symbol_lock("BTC/USDT", "owner-a")
+    assert storage.wallet.active_locks["BTC/USDT"] == "owner-b"
+    assert storage.wallet.simultaneous_trades == 1
+
+    await controller._release_symbol_lock("BTC/USDT", "owner-b")
+    assert "BTC/USDT" not in storage.wallet.active_locks
+    assert storage.wallet.simultaneous_trades == 0
+
+
+@pytest.mark.asyncio
 async def test_wallet_controller_latency_pre_send():
     """Valida que ordens com latência estourada antes de tocar o mercado são rejeitadas pela Wallet."""
     config_mock = MagicMock()
@@ -509,7 +772,7 @@ async def test_wallet_controller_latency_pre_send():
 
     # 2. Testa fecho obsoleto
     # Primeiro coloca a posição na RAM manualmente
-    storage.wallet.active_locks["BTC/USDT"] = True
+    storage.wallet.active_locks["BTC/USDT"] = "g-open"
     storage.wallet.active_positions["g-open"] = {
         "guid": "g-open",
         "symbol": "BTC/USDT",
@@ -581,5 +844,3 @@ async def test_wallet_observer_pattern():
     assert payload["guid"] == "g-pos"
     assert payload["realized_pnl"] == pytest.approx(10.0)
     assert payload["status"] == "CLOSED"
-
-

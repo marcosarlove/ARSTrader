@@ -29,7 +29,7 @@ class SignalServer:
         host: str,
         port: int,
         on_control_cb: Callable[[dict], Any],
-        on_order_cb: Callable[[str, asyncio.Future], Coroutine[Any, Any, None]],
+        on_order_cb: Callable[[dict, asyncio.Future], Coroutine[Any, Any, None]],
         on_rejected_order_cb: Optional[Callable[[dict, str], Coroutine[Any, Any, None]]] = None,
         max_latency_seconds: float = 2.0
     ):
@@ -55,6 +55,13 @@ class SignalServer:
         self._server: Optional[asyncio.Server] = None
         self._is_running = False
         self._active_connections = set()
+
+    async def _send_response_json(
+        self, writer: asyncio.StreamWriter, payload: dict
+    ) -> None:
+        """Envia uma resposta IPC como JSON de linha única terminado por newline."""
+        writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
+        await writer.drain()
 
     async def start(self) -> None:
         """Inicializa o servidor TCP e coloca-o à escuta na rede local."""
@@ -164,8 +171,9 @@ class SignalServer:
                 if not success:
                     # Envia a resposta final de erro pelo socket da estratégia com terminação newline
                     response_payload = {"status": "IGNORED", "reason": verdict}
-                    writer.write(json.dumps(response_payload).encode("utf-8") + b"\n")
-                    await writer.drain()
+                    if payload and payload.get("guid"):
+                        response_payload["guid"] = payload["guid"]
+                    await self._send_response_json(writer, response_payload)
                     
                     # Resolve a promessa interna para limpeza
                     promise.set_result(response_payload)
@@ -181,15 +189,15 @@ class SignalServer:
                             logger.error(f"[Server] Erro ao disparar auditoria de rejeição: {audit_err}")
                     return
 
-                # Chama o Orchestrator passando a string bruta e o objeto da promessa vacante
-                await self.on_order(message_str, promise)
+                # O parse e a normalização pertencem ao TrafficController.
+                # O Orchestrator recebe somente o payload já validado.
+                await self.on_order(payload, promise)
 
                 # A Mágica do Desacoplamento: O Server suspende aqui até a promessa ser resolvida
                 response_payload = await promise
 
                 # Envia a resposta final de volta pelo socket da estratégia com terminação newline
-                writer.write(json.dumps(response_payload).encode("utf-8") + b"\n")
-                await writer.drain()
+                await self._send_response_json(writer, response_payload)
             else:
                 logger.warning(
                     f"[Server] Mensagem com tipo de payload desconhecido ou malformado."

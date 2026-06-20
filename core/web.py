@@ -67,6 +67,8 @@ def get_storage_state() -> Dict[str, Any]:
                     "price": pos.get("price"),
                     "operation": pos.get("operation"),
                     "exchange_order_id": pos.get("exchange_order_id"),
+                    "stop_loss_order_id": pos.get("stop_loss_order_id"),
+                    "take_profit_order_id": pos.get("take_profit_order_id"),
                     "stop_loss": pos.get("stop_loss"),
                     "take_profit": pos.get("take_profit"),
                 }

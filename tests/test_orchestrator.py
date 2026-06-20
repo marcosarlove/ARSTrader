@@ -173,13 +173,10 @@ async def test_orchestrator_on_order_received_success():
         "current_price": 50000.0
     }
     
-    import json
-    message_str = json.dumps(signal)
-    
     loop = asyncio.get_running_loop()
     promise = loop.create_future()
 
-    await orchestrator.on_order_received(message_str, promise)
+    await orchestrator.on_order_received(signal, promise)
 
     # A promise IPC deve ter sido resolvida com o status executado
     res = await promise
@@ -198,6 +195,7 @@ async def test_orchestrator_on_order_received_success():
     assert isinstance(second_save, OperationModel)
     assert second_save.status == "EXECUTED"
     assert float(second_save.amount) == 0.02
+    assert second_save.exchange_order_id == "ord-exchange-1"
 
 
 @pytest.mark.asyncio
