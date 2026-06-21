@@ -56,7 +56,7 @@ modules:
 
   # Estratégia Avançada Estrela da Manhã
   morningstar:
-    enabled: false
+    enabled: true
     path: "morningstar"       # Corresponde à pasta modules/morningstar
     class_name: "MorningStar"  # Classe principal dentro do runner.py exposta no __init__.py
     heartbeat_interval: 5
@@ -69,10 +69,10 @@ modules:
 
   # Estratégia Avançada Estrela da Tarde
   eveningstar:
-    enabled: false
+    enabled: true
     path: "eveningstar"       # Corresponde à pasta modules/eveningstar
     class_name: "EveningStar"  # Classe principal dentro do runner.py exposta no __init__.py
-    heartbeat_interval: 2
+    heartbeat_interval: 5
     restrictions:
       target_markets: "*/USDT"
       allowed_exchanges: "*"

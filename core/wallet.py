@@ -74,6 +74,8 @@ class WalletController:
         self._supports_attached_sl_tp = False
         self._supports_stop_loss_price = False
         self._supports_take_profit_price = False
+        self._exchange_boot_attempts = 3
+        self._exchange_boot_retry_delay = 1.0
 
     def register_order_close_listener(self, listener: Callable[[dict], Any]) -> None:
         """Adiciona um listener para receber atualizações de fechamento de ordens."""
@@ -175,6 +177,41 @@ class WalletController:
         if inspect.iscoroutine(res):
             await res
 
+    async def _with_exchange_boot_retries(self, label: str, call: Callable[[], Any]) -> Any:
+        """Executa chamadas críticas de boot com retry para falhas transitórias de rede."""
+        attempts = max(1, int(self._exchange_boot_attempts))
+        delay = max(0.0, float(self._exchange_boot_retry_delay))
+
+        for attempt in range(1, attempts + 1):
+            try:
+                result = call()
+                if inspect.iscoroutine(result):
+                    return await result
+                return result
+            except ccxt.AuthenticationError:
+                raise
+            except (ccxt.NetworkError, OSError, TimeoutError) as exc:
+                if attempt >= attempts:
+                    logger.critical(
+                        "[Wallet] Falha crítica de rede no boot da Exchange em %s após %d tentativa(s): %s",
+                        label,
+                        attempts,
+                        exc,
+                    )
+                    raise
+
+                wait_seconds = delay * attempt
+                logger.warning(
+                    "[Wallet] Falha transitória no boot da Exchange em %s (%d/%d): %s. Nova tentativa em %.1fs.",
+                    label,
+                    attempt,
+                    attempts,
+                    exc,
+                    wait_seconds,
+                )
+                if wait_seconds:
+                    await asyncio.sleep(wait_seconds)
+
     def _feature_value(self, symbol: str, method: str, feature: str) -> bool:
         """Consulta suporte de feature no CCXT quando disponível."""
         feature_value = getattr(self.exchange, "feature_value", None)
@@ -224,9 +261,12 @@ class WalletController:
         if not isinstance(self.exchange, Mock):
             try:
                 logger.info("[Wallet] Validando credenciais com a Exchange via REST API...")
-                await self._maybe_load_markets()
+                await self._with_exchange_boot_retries("load_markets", self._maybe_load_markets)
                 self._detect_protection_capabilities()
-                balance_data = await self.exchange.fetch_balance()
+                balance_data = await self._with_exchange_boot_retries(
+                    "fetch_balance",
+                    self.exchange.fetch_balance,
+                )
                 free_balance = balance_data.get("free", {})
                 allowed_bases = ["USDT", "USDC", "USD"]
                 usdt_balance = 0.0

@@ -79,6 +79,11 @@ def unused_port():
     return port
 
 
+@pytest.fixture(autouse=True)
+def isolate_module_logs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 async def _run_ipc_server(port, received, order_response=None, stop_after=3):
     async def handle(reader, writer):
         try:

@@ -232,6 +232,47 @@ async def test_wallet_controller_reconciliation():
 
 
 @pytest.mark.asyncio
+async def test_wallet_controller_retries_transient_exchange_boot_network_error():
+    """Falha transitória em load_markets não deve derrubar o boot sem retry."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+
+    class FlakyBootExchange:
+        def __init__(self):
+            self.load_markets_calls = 0
+
+        async def load_markets(self):
+            self.load_markets_calls += 1
+            if self.load_markets_calls == 1:
+                raise ccxt.ExchangeNotAvailable("DNS timeout")
+            return {"BTC/USDT": {}}
+
+        async def fetch_balance(self):
+            return {"free": {"USDT": 1234.5}}
+
+        def feature_value(self, symbol, method, feature):
+            return False
+
+        async def watch_balance(self):
+            raise asyncio.CancelledError
+
+        async def watch_orders(self):
+            raise asyncio.CancelledError
+
+    exchange = FlakyBootExchange()
+    controller = WalletController(exchange, config_mock)
+    controller._exchange_boot_retry_delay = 0.0
+
+    closed_payloads = await controller.initialize_and_sync([], current_daily_loss=0.0)
+
+    assert closed_payloads == []
+    assert exchange.load_markets_calls == 2
+    assert storage.wallet.balance == 1234.5
+
+    await controller.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_wallet_controller_execution_exceptions():
     """Valida o tratamento de exceções do CCXT liberando locks em caso de falha de execução."""
     config_mock = MagicMock()

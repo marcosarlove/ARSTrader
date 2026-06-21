@@ -1,0 +1,56 @@
+assets:
+  - BTC/USDT
+  - SOL/USDT
+
+timeframe: 4h
+check_interval: 60
+candle_limit: 100
+
+exchange: binance
+market: FUTURES
+order_response_timeout: 300
+
+reward_risk_ratio: 2.0
+resistance_tolerance_pct: 0.005
+stop_buffer_pct: 0.001
+long_body_ratio: 1.2
+star_body_ratio: 0.35
+
+filters:
+  volume:
+    enabled: false
+    lookback: 20
+    reversal_min_ratio: 1.2
+
+  volatility:
+    enabled: false
+    atr_period: 14
+    max_atr_pct: 0.03
+
+  trend:
+    enabled: false
+    ema_fast: 20
+    ema_slow: 50
+    require_prior_uptrend: true
+
+  momentum:
+    enabled: false
+    rsi_period: 14
+    min_rsi: 55
+
+  risk:
+    enabled: false
+    max_signal_risk_pct: 0.02
+
+  cooldown:
+    enabled: false
+    candles: 3
+
+fetcher:
+  exchange_id: binance
+  exchange_options:
+    apiKey: ${EVENINGSTAR_BINANCE_API_KEY:}
+    secret: ${EVENINGSTAR_BINANCE_SECRET:}
+    options:
+      defaultType: future
+  ohlcv_params: {}
