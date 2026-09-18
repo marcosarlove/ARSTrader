@@ -105,7 +105,7 @@ O ecossistema do ARSTrader é constituído por peças altamente especializadas q
 
 #### 1. [global_config.yaml](file:///home/marcosarlove/projetos/ARSTrader/global_config.yaml)
 É a declaração mestre do estado estático do robô. Sua função teórica é agir como a fonte de verdade para parametrização pré-boot.
-* **Mapeamento de Ambiente e Limites de Processo:** Define se o robô opera em modo simulado (*sandbox*) ou real (*production*), além de fixar o tempo limite de ausência de sinais de vida tolerados para processos filhos.
+* **Mapeamento de Ambiente e Limites de Processo:** Define se o robô opera em modo simulado (*demo*) ou real (*production*), além de fixar o tempo limite de ausência de sinais de vida tolerados para processos filhos.
 * **Abstração de Conexões (Exchanges):** Modula as exchanges ativas, parâmetros de conexões privadas (como ajustes diferenciais de tempo para evitar erros de sincronismo com servidores remotos) e opções de mercados padrão (como a preferência automática por contratos de derivativos futuros perpétuos).
 * **Parâmetros Centrais de Risco:** Estabelece os limites fundamentais de perdas operacionais diárias (drawdowns), a fração exata de saldo alocada por trade para position sizing e o teto máximo de trades concorrentes na exchange.
 * **Registro de Módulos:** Define quais estratégias estão autorizadas a rodar, seus caminhos físicos no sistema e restrições de mercados ou fusos horários de ativação.
