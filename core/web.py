@@ -53,6 +53,7 @@ def get_storage_state() -> Dict[str, Any]:
         },
         "wallet": {
             "balance": storage.wallet.balance,
+            "balance_breakdown": storage.wallet.balance_breakdown,
             "max_daily_loss_pct": storage.wallet.max_daily_loss_pct,
             "current_daily_loss_pct": storage.wallet.current_daily_loss_pct,
             "simultaneous_trades": storage.wallet.simultaneous_trades,

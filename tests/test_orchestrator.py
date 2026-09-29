@@ -46,6 +46,7 @@ class DummyWallet:
 def reset_storage():
     """Reseta o estado do storage global para cada caso de teste."""
     storage.wallet.balance = 1000.0
+    storage.wallet.balance_breakdown = []
     storage.wallet.daily_loss_counter = 0.0
     storage.wallet.simultaneous_trades = 0
     storage.wallet.active_locks.clear()
@@ -59,7 +60,7 @@ async def test_orchestrator_boot_reconciliation():
     config_mock = MagicMock()
     config_mock.global_risk.execution_exchange = "binance"
     config_mock.exchanges = {"binance": MagicMock(enabled=True)}
-    config_mock.system.environment = "sandbox"
+    config_mock.system.environment = "demo"
     config_mock.system.max_signal_latency_ms = 50.0
     config_mock.web_server = None
 
@@ -144,6 +145,47 @@ async def test_orchestrator_boot_reconciliation():
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_applies_demo_environment():
+    config_mock = MagicMock()
+    config_mock.system.environment = "demo"
+    exchange_mock = MagicMock()
+
+    orchestrator = GlobalOrchestrator(config=config_mock, exchange=exchange_mock)
+
+    await orchestrator._apply_exchange_environment()
+
+    exchange_mock.enable_demo_trading.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_keeps_production_environment_untouched():
+    config_mock = MagicMock()
+    config_mock.system.environment = "production"
+    exchange_mock = MagicMock()
+
+    orchestrator = GlobalOrchestrator(config=config_mock, exchange=exchange_mock)
+
+    await orchestrator._apply_exchange_environment()
+
+    exchange_mock.enable_demo_trading.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_invalid_environment():
+    config_mock = MagicMock()
+    config_mock.system.environment = "sandbox"
+    exchange_mock = MagicMock()
+
+    orchestrator = GlobalOrchestrator(
+        config=config_mock,
+        exchange=exchange_mock,
+    )
+
+    with pytest.raises(ValueError, match="Ambiente inválido"):
+        await orchestrator._apply_exchange_environment()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_on_order_received_success():
     """Valida o roteamento e processamento de um sinal válido de abertura de ordem."""
     db_mock = MagicMock()
@@ -196,6 +238,39 @@ async def test_orchestrator_on_order_received_success():
     assert second_save.status == "EXECUTED"
     assert float(second_save.amount) == 0.02
     assert second_save.exchange_order_id == "ord-exchange-1"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_counts_wallet_ignored_order_as_dropped_signal():
+    db_mock = MagicMock()
+    wallet_mock = MagicMock()
+    wallet_mock.execute_order = AsyncMock(return_value={
+        "guid": "g-ignored",
+        "status": "IGNORED",
+        "reason": "STOP_LOSS_EXCEEDS_MAX_RISK",
+    })
+
+    orchestrator = GlobalOrchestrator(db=db_mock, wallet=wallet_mock)
+
+    signal = {
+        "guid": "g-ignored",
+        "strategy_name": "morningstar",
+        "symbol": "BTC/USDT",
+        "operation": "BUY",
+        "market": "FUTURES",
+        "exchange": "binance",
+        "current_price": 50000.0,
+        "stop_loss": 45000.0,
+        "take_profit": 51000.0,
+    }
+    loop = asyncio.get_running_loop()
+    promise = loop.create_future()
+
+    await orchestrator.on_order_received(signal, promise)
+
+    res = await promise
+    assert res["status"] == "IGNORED"
+    assert storage.comms.signals_dropped == 1
 
 
 @pytest.mark.asyncio

@@ -207,6 +207,8 @@ class ModuleLoader:
                 str(self.server_port),
                 "--heartbeat-interval",
                 str(float(heartbeat_interval)),
+                "--environment",
+                str(self.config.system.environment),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

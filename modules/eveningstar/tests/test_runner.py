@@ -5,9 +5,11 @@ import pytest
 from modules.eveningstar.runner import (
     build_fetcher_config,
     build_filters_config,
+    build_scenario_wrapper_config,
     build_strategy_kwargs,
     expand_env_vars,
     load_module_config,
+    normalize_environment,
 )
 
 
@@ -21,6 +23,7 @@ def _args(**overrides):
         "core_host": "127.0.0.1",
         "core_port": 8888,
         "heartbeat_interval": 5.0,
+        "environment": "demo",
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -136,3 +139,16 @@ def test_runner_validates_fetcher_config_shape():
 def test_runner_validates_filters_config_shape():
     with pytest.raises(ValueError, match="filters"):
         build_filters_config({"filters": []})
+
+
+def test_runner_validates_scenario_wrapper_config_shape():
+    with pytest.raises(ValueError, match="scenario_wrapper"):
+        build_scenario_wrapper_config({"scenario_wrapper": []})
+
+
+def test_runner_normalizes_environment():
+    assert normalize_environment("DEMO") == "demo"
+    assert normalize_environment("production") == "production"
+
+    with pytest.raises(ValueError, match="environment"):
+        normalize_environment("sandbox")

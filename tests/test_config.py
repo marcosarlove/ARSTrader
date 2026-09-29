@@ -8,7 +8,7 @@ def valid_yaml_content():
     """Retorna uma estrutura de dicionário contendo um arquivo YAML de configuração válido."""
     return {
         "system": {
-            "environment": "sandbox",
+            "environment": "demo",
             "heartbeat_timeout": 5,
             "max_signal_latency_ms": 50
         },
@@ -86,7 +86,7 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
     # 1. Validações do bloco 'system'
     assert manager.system is not None
     assert isinstance(manager.system, SystemConfig)
-    assert manager.system.environment == "sandbox"
+    assert manager.system.environment == "demo"
     assert manager.system.heartbeat_timeout == 5
     assert manager.system.max_signal_latency_ms == 50
 
@@ -152,7 +152,7 @@ async def test_load_valid_config(tmp_path, valid_yaml_content):
 
     # 5. Validações da integração com o storage global
     from core import storage
-    assert storage.config.environment == "sandbox"
+    assert storage.config.environment == "demo"
     assert storage.config.heartbeat_timeout == 5.0
 
 @pytest.mark.asyncio
@@ -195,7 +195,7 @@ async def test_load_invalid_value_type(tmp_path, valid_yaml_content):
     """Testa se ValueError é lançado quando um tipo de dado é incompatível (ex: heartbeat_timeout como string não numérica)."""
     invalid_content = valid_yaml_content.copy()
     invalid_content["system"] = {
-        "environment": "sandbox",
+        "environment": "demo",
         "heartbeat_timeout": "nao_sou_um_numero",
         "max_signal_latency_ms": 50
     }
@@ -206,6 +206,24 @@ async def test_load_invalid_value_type(tmp_path, valid_yaml_content):
     with pytest.raises(ValueError) as exc_info:
         await manager.load()
     assert "Erro crítico na conversão de tipos" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_load_rejects_invalid_environment(tmp_path, valid_yaml_content):
+    """Testa se ambientes fora de demo/production são rejeitados."""
+    invalid_content = valid_yaml_content.copy()
+    invalid_content["system"] = {
+        "environment": "sandbox",
+        "heartbeat_timeout": 5,
+        "max_signal_latency_ms": 50
+    }
+
+    temp_path = create_temp_yaml(tmp_path, invalid_content)
+    manager = ConfigManager(config_path=temp_path)
+
+    with pytest.raises(ValueError) as exc_info:
+        await manager.load()
+    assert "system.environment inválido" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -254,4 +272,3 @@ async def test_load_config_with_env_vars(tmp_path, valid_yaml_content):
     
     os.environ.pop("TEST_BINANCE_API_KEY", None)
     os.environ.pop("TEST_BINANCE_SECRET", None)
-

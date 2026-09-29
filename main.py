@@ -101,6 +101,28 @@ async def main_async(args: argparse.Namespace) -> int:
         shutdown_event.set()
         
     loop = asyncio.get_running_loop()
+
+    previous_exception_handler = loop.get_exception_handler()
+
+    def handle_async_exception(loop, context):
+        exc = context.get("exception")
+        message = context.get("message", "")
+        if (
+            message == "Future exception was never retrieved"
+            and isinstance(exc, TypeError)
+            and 'can only concatenate str (not "NoneType") to str' in str(exc)
+        ):
+            logger.debug(
+                "Erro interno conhecido do CCXT Pro no keepalive do listenKey ignorado após falha de rede."
+            )
+            return
+        if previous_exception_handler:
+            previous_exception_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_async_exception)
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, handle_signal)

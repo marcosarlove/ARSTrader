@@ -372,3 +372,4 @@ python3 main.py
 Assim que o robô inicializar, o servidor web local subirá no host e porta configurados no YAML (padrão: `127.0.0.1:8080`).
 * Abra seu navegador web e acesse: **[http://127.0.0.1:8080](http://127.0.0.1:8080)**.
 * Você verá a telemetria, conexões ativas, logs dos subprocessos das estratégias e evolução do drawdown diário atualizados em tempo real via WebSockets.
+

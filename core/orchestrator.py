@@ -20,8 +20,12 @@ from core.server import SignalServer
 from core.loader import ModuleLoader
 from core.models import OperationModel, TradeResultModel
 from core.logger import STATUS_LEVEL_NUM
+from core import storage
 
 logger = logging.getLogger("ARSTrader.Orchestrator")
+
+
+SUPPORTED_ENVIRONMENTS = {"demo", "production"}
 
 
 class GlobalOrchestrator:
@@ -99,13 +103,7 @@ class GlobalOrchestrator:
                 'options': ex_config.options,
             }
             self.exchange = self.create_exchange(exchange_name, options)
-            if self.config.system.environment == "sandbox":
-                try:
-                    res = self.exchange.set_sandbox_mode(True)
-                    if inspect.iscoroutine(res):
-                        await res
-                except Exception as e:
-                    logger.warning(f"[Orchestrator] Falha ao definir modo sandbox na exchange: {e}")
+            await self._apply_exchange_environment()
 
         # 4. Reconciliação no Boot (Reconciliation Loop)
         await self._reconcile_and_boot_wallet()
@@ -160,6 +158,27 @@ class GlobalOrchestrator:
         import ccxt.pro as ccxtpro
         exchange_class = getattr(ccxtpro, exchange_name)
         return exchange_class(options)
+
+    async def _apply_exchange_environment(self) -> None:
+        """Aplica o ambiente global na exchange ativa."""
+        environment = str(self.config.system.environment).lower()
+        if environment not in SUPPORTED_ENVIRONMENTS:
+            raise ValueError(
+                f"[Orchestrator] Ambiente inválido: {environment}. Use 'demo' ou 'production'."
+            )
+
+        if environment == "production":
+            return
+
+        if not hasattr(self.exchange, "enable_demo_trading"):
+            raise RuntimeError(
+                "[Orchestrator] A exchange/versão CCXT não suporta demo trading."
+            )
+
+        res = self.exchange.enable_demo_trading(True)
+        if inspect.iscoroutine(res):
+            await res
+        logger.info("[Orchestrator] Demo trading habilitado na exchange.")
 
     def _get_wallet_balance(self) -> float:
         """Retorna o saldo da carteira com segurança se estiver disponível."""
@@ -313,6 +332,9 @@ class GlobalOrchestrator:
                     pass
 
             self.db.enqueue_save(op_model)
+
+            if op_model.status in {"IGNORED", "FAILED"}:
+                storage.comms.signals_dropped += 1
 
             # 4. Resolve a promise da rede IPC
             promise.set_result(res)
@@ -497,14 +519,7 @@ class GlobalOrchestrator:
                 'options': ex_config.options,
             }
             self.exchange = self.create_exchange(exchange_name, options)
-            if self.config.system.environment == "sandbox":
-                try:
-                    import inspect
-                    res = self.exchange.set_sandbox_mode(True)
-                    if inspect.iscoroutine(res):
-                        await res
-                except Exception as e:
-                    logger.warning(f"Falha ao definir modo sandbox na exchange: {e}")
+            await self._apply_exchange_environment()
                     
             # 6. Re-inicializa a Wallet e reconcilia
             await self._reconcile_and_boot_wallet()

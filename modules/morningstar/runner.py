@@ -20,10 +20,12 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from modules.morningstar.strategy import MorningStarStrategy
+from modules.morningstar.utils.scenario_ohlcv_wrapper import MorningStarScenarioOhlcvWrapper
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 DEFAULT_ENV_PATH = Path(__file__).with_name(".env")
+SUPPORTED_ENVIRONMENTS = {"demo", "production"}
 
 
 class AsyncCcxtOhlcvFetcher:
@@ -33,10 +35,12 @@ class AsyncCcxtOhlcvFetcher:
         self,
         *,
         exchange_id: str,
+        environment: str,
         exchange_options: Optional[Dict[str, Any]] = None,
         ohlcv_params: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.exchange_id = exchange_id
+        self.environment = normalize_environment(environment)
         self.exchange_options = exchange_options or {}
         self.ohlcv_params = ohlcv_params or {}
         self._exchange: Optional[Any] = None
@@ -69,6 +73,10 @@ class AsyncCcxtOhlcvFetcher:
                 **self.exchange_options,
             }
         )
+        if self.environment == "demo":
+            res = self._exchange.enable_demo_trading(True)
+            if asyncio.iscoroutine(res):
+                await res
         return self._exchange
 
 
@@ -86,7 +94,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-interval", type=float)
     parser.add_argument("--exchange")
     parser.add_argument("--market")
+    parser.add_argument("--environment", choices=sorted(SUPPORTED_ENVIRONMENTS), required=True)
     return parser.parse_args()
+
+
+def normalize_environment(environment: str) -> str:
+    value = str(environment).lower()
+    if value not in SUPPORTED_ENVIRONMENTS:
+        raise ValueError("environment deve ser demo ou production")
+    return value
 
 
 def load_module_config(config_path: str, env_path: str = str(DEFAULT_ENV_PATH)) -> Dict[str, Any]:
@@ -176,6 +192,15 @@ def build_fetcher_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return fetcher_config
 
 
+def build_scenario_wrapper_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    wrapper_config = config.get("scenario_wrapper", {})
+    if wrapper_config is None:
+        wrapper_config = {}
+    if not isinstance(wrapper_config, dict):
+        raise ValueError("scenario_wrapper deve ser um mapa YAML.")
+    return wrapper_config
+
+
 def build_filters_config(config: Dict[str, Any]) -> Dict[str, Any]:
     filters_config = config.get("filters", {})
     if filters_config is None:
@@ -196,14 +221,21 @@ async def amain() -> int:
     config = load_module_config(args.config, args.env)
     strategy_kwargs = build_strategy_kwargs(args, config)
     fetcher_config = build_fetcher_config(config)
+    scenario_wrapper_config = build_scenario_wrapper_config(config)
+    environment = normalize_environment(args.environment)
 
     fetcher = AsyncCcxtOhlcvFetcher(
         exchange_id=str(require_config(fetcher_config, "exchange_id")),
+        environment=environment,
         exchange_options=dict(require_config(fetcher_config, "exchange_options")),
         ohlcv_params=dict(require_config(fetcher_config, "ohlcv_params")),
     )
+    strategy_fetcher = fetcher
+    if environment == "demo" and bool(scenario_wrapper_config.get("enabled", False)):
+        strategy_fetcher = MorningStarScenarioOhlcvWrapper(fetcher, scenario_wrapper_config)
+
     strategy = MorningStarStrategy(
-        ohlcv_fetcher=fetcher,
+        ohlcv_fetcher=strategy_fetcher,
         **strategy_kwargs,
     )
 

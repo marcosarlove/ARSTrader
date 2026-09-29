@@ -9,6 +9,7 @@ from core.storage import storage
 def reset_storage():
     """Reseta o estado do storage global para cada caso de teste."""
     storage.wallet.balance = 1000.0
+    storage.wallet.balance_breakdown = []
     storage.wallet.daily_loss_counter = 0.0
     storage.wallet.simultaneous_trades = 0
     storage.wallet.active_locks.clear()
@@ -95,7 +96,7 @@ async def test_web_server_security_and_config():
     # Mock ConfigManager
     mock_config = MagicMock()
     mock_config.yaml_data = {
-        "system": {"environment": "sandbox", "heartbeat_timeout": 5, "max_signal_latency_ms": 50},
+        "system": {"environment": "demo", "heartbeat_timeout": 5, "max_signal_latency_ms": 50},
         "web_server": {"host": "127.0.0.1", "port": 8080},
         "global_risk": {"execution_exchange": "binance", "max_daily_loss_pct": 2.0, "max_daily_loss_limit": 100.0, "max_simultaneous_trades": 3, "trade_risk_percentage": 0.1, "default_stop_loss_pct": 1.5, "default_take_profit_pct": 3.0, "default_safety_stop_loss_pct": 5.0},
         "exchanges": {"binance": {"enabled": True, "api_key": "key", "secret": "sec"}},
@@ -178,7 +179,7 @@ async def test_web_server_security_and_config():
             }
         }
         post_data_disable = {
-            "system.environment": "sandbox",
+            "system.environment": "demo",
             "system.heartbeat_timeout": "5",
             "system.max_signal_latency_ms": "50",
             "web_server.host": "127.0.0.1",
@@ -195,4 +196,3 @@ async def test_web_server_security_and_config():
             assert "morningstar" in html
 
     await server.shutdown()
-

@@ -14,6 +14,7 @@ from core.logger import STATUS_LEVEL_NUM
 def reset_storage():
     """Reseta o estado do storage global para cada caso de teste."""
     storage.wallet.balance = 1000.0
+    storage.wallet.balance_breakdown = []
     storage.wallet.daily_loss_counter = 0.0
     storage.wallet.simultaneous_trades = 0
     storage.wallet.active_locks.clear()
@@ -103,68 +104,21 @@ async def test_wallet_controller_sizing_limits():
     )
     exchange_mock.create_order.assert_any_call(
         symbol="BTC/USDT",
-        type="market",
+        type="STOP_MARKET",
         side="sell",
         amount=0.01,
         price=None,
-        params={"stopLossPrice": 49000.0, "reduceOnly": "true"},
+        params={"triggerPrice": 49000.0, "reduceOnly": "true"},
     )
     exchange_mock.create_order.assert_any_call(
         symbol="BTC/USDT",
-        type="market",
+        type="TAKE_PROFIT_MARKET",
         side="sell",
         amount=0.01,
         price=None,
-        params={"takeProfitPrice": 52000.0, "reduceOnly": "true"},
+        params={"triggerPrice": 52000.0, "reduceOnly": "true"},
     )
 
-
-@pytest.mark.asyncio
-async def test_wallet_controller_attached_sl_tp_when_supported():
-    """Usa SL/TP anexado na ordem de entrada quando o CCXT/Binance declara suporte."""
-    config_mock = MagicMock()
-    config_mock.global_risk.max_simultaneous_trades = 3
-    config_mock.global_risk.max_daily_loss_limit = 100.0
-    config_mock.global_risk.trade_risk_percentage = 0.10
-    config_mock.global_risk.default_stop_loss_pct = 2.0
-    config_mock.global_risk.default_take_profit_pct = 4.0
-
-    exchange_mock = MagicMock()
-    exchange_mock.market.return_value = {}
-    exchange_mock.create_order = AsyncMock(return_value={
-        "id": "entry-1",
-        "price": 50000.0,
-        "status": "closed",
-        "stopLossOrderId": "sl-1",
-        "takeProfitOrderId": "tp-1",
-    })
-
-    controller = WalletController(exchange_mock, config_mock)
-    controller._supports_attached_sl_tp = True
-    controller._supports_stop_loss_price = True
-    controller._supports_take_profit_price = True
-    storage.wallet.balance = 1000.0
-
-    res = await controller.execute_order({
-        "guid": "g-attached",
-        "symbol": "BTC/USDT",
-        "operation": "BUY",
-        "current_price": 50000.0,
-    })
-
-    assert res["status"] == "EXECUTED"
-    assert exchange_mock.create_order.call_count == 1
-    exchange_mock.create_order.assert_called_once_with(
-        symbol="BTC/USDT",
-        type="market",
-        side="buy",
-        amount=0.002,
-        params={"stopLossPrice": 49000.0, "takeProfitPrice": 52000.0},
-    )
-
-    pos = storage.wallet.active_positions["g-attached"]
-    assert pos["stop_loss_order_id"] == "sl-1"
-    assert pos["take_profit_order_id"] == "tp-1"
 
 
 @pytest.mark.asyncio
@@ -270,6 +224,177 @@ async def test_wallet_controller_retries_transient_exchange_boot_network_error()
     assert storage.wallet.balance == 1234.5
 
     await controller.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_reads_futures_demo_balance_from_info_assets():
+    """Saldo futures/demo pode vir apenas em info.assets no payload bruto da Binance."""
+    config_mock = MagicMock()
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+
+    exchange_mock = MagicMock()
+    controller = WalletController(exchange_mock, config_mock)
+
+    balance = controller._extract_stable_balance({
+        "info": {
+            "assets": [
+                {"asset": "BNB", "availableBalance": "0.05"},
+                {"asset": "USDT", "availableBalance": "5000.0"},
+                {"asset": "USDC", "availableBalance": "5000.0"},
+            ]
+        }
+    })
+
+    assert balance == 10000.0
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_reads_documented_fapi_balance_list():
+    """O endpoint /fapi/v3/balance retorna uma lista de assets."""
+    config_mock = MagicMock()
+    exchange_mock = MagicMock()
+    controller = WalletController(exchange_mock, config_mock)
+
+    balance = controller._extract_stable_balance([
+        {"asset": "USDT", "availableBalance": "5000.0", "balance": "5000.0"},
+        {"asset": "USDC", "availableBalance": "5000.0", "balance": "5000.0"},
+    ])
+
+    assert balance == 10000.0
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_builds_balance_breakdown_in_usdt():
+    """Saldo total soma componentes aceitos como margem em equivalente USDT."""
+    config_mock = MagicMock()
+    exchange_mock = MagicMock()
+    exchange_mock.fetch_ticker = AsyncMock(return_value={"last": 60000.0})
+    controller = WalletController(exchange_mock, config_mock)
+
+    total, breakdown = await controller._build_margin_balance_snapshot([
+        {"asset": "USDT", "balance": "5000.0", "marginAvailable": True},
+        {"asset": "USDC", "balance": "5000.0", "marginAvailable": True},
+        {"asset": "BTC", "balance": "0.1", "marginAvailable": True},
+        {"asset": "BNB", "balance": "10.0", "marginAvailable": False},
+    ])
+
+    assert total == 16000.0
+    assert breakdown == [
+        {"asset": "BTC", "amount": 0.1, "rate_usdt": 60000.0, "value_usdt": 6000.0},
+        {"asset": "USDC", "amount": 5000.0, "rate_usdt": 1.0, "value_usdt": 5000.0},
+        {"asset": "USDT", "amount": 5000.0, "rate_usdt": 1.0, "value_usdt": 5000.0},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_fetches_future_balance_with_explicit_type():
+    """Em futures/demo, o saldo deve ser consultado com type=future."""
+    config_mock = MagicMock()
+    config_mock.global_risk.execution_exchange = "binance"
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.exchanges = {
+        "binance": MagicMock(options={"defaultType": "future"})
+    }
+
+    class FuturesBalanceExchange:
+        def __init__(self):
+            self.fetch_balance_params = None
+
+        async def load_markets(self):
+            return {"BTC/USDT:USDT": {}}
+
+        async def fetch_balance(self, params=None):
+            self.fetch_balance_params = params
+            return {"USDT": {"free": "5000.0"}}
+
+        def feature_value(self, symbol, method, feature):
+            return False
+
+        async def watch_balance(self, params=None):
+            raise asyncio.CancelledError
+
+        async def watch_orders(self):
+            raise asyncio.CancelledError
+
+    exchange = FuturesBalanceExchange()
+    controller = WalletController(exchange, config_mock)
+    controller._exchange_boot_retry_delay = 0.0
+
+    await controller.initialize_and_sync([], current_daily_loss=0.0)
+
+    assert exchange.fetch_balance_params == {"type": "future"}
+    assert storage.wallet.balance == 5000.0
+    assert storage.wallet.balance_breakdown == [
+        {"asset": "USDT", "amount": 5000.0, "rate_usdt": 1.0, "value_usdt": 5000.0}
+    ]
+
+    await controller.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_falls_back_to_documented_fapi_balance_endpoint():
+    """Se fetch_balance unificado vier zerado, usa o endpoint balance de USDⓈ-M Futures."""
+    config_mock = MagicMock()
+    config_mock.global_risk.execution_exchange = "binance"
+    config_mock.global_risk.max_daily_loss_limit = 100.0
+    config_mock.exchanges = {
+        "binance": MagicMock(options={"defaultType": "future"})
+    }
+
+    class FuturesDemoBalanceExchange:
+        async def load_markets(self):
+            return {"BTC/USDT:USDT": {}}
+
+        async def fetch_balance(self, params=None):
+            return {"free": {"USDT": 0.0}}
+
+        async def fapiPrivateV3GetBalance(self, params=None):
+            return [
+                {"asset": "USDT", "availableBalance": "5000.0", "balance": "5000.0"},
+                {"asset": "USDC", "availableBalance": "5000.0", "balance": "5000.0"},
+            ]
+
+        def feature_value(self, symbol, method, feature):
+            return False
+
+        async def watch_balance(self, params=None):
+            raise asyncio.CancelledError
+
+        async def watch_orders(self):
+            raise asyncio.CancelledError
+
+    exchange = FuturesDemoBalanceExchange()
+    controller = WalletController(exchange, config_mock)
+    controller._exchange_boot_retry_delay = 0.0
+
+    await controller.initialize_and_sync([], current_daily_loss=0.0)
+
+    assert storage.wallet.balance == 10000.0
+    assert storage.wallet.balance_breakdown == [
+        {"asset": "USDC", "amount": 5000.0, "rate_usdt": 1.0, "value_usdt": 5000.0},
+        {"asset": "USDT", "amount": 5000.0, "rate_usdt": 1.0, "value_usdt": 5000.0},
+    ]
+
+    await controller.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wallet_controller_does_not_call_invalid_fapi_v1_balance_endpoint():
+    """O endpoint /fapi/v1/balance é inválido; o fallback documentado limita-se a V3/V2."""
+    config_mock = MagicMock()
+    exchange_mock = MagicMock()
+    exchange_mock.fapiPrivateV3GetBalance = AsyncMock(return_value=[])
+    exchange_mock.fapiPrivateV2GetBalance = AsyncMock(return_value=[])
+    exchange_mock.fapiPrivateGetBalance = AsyncMock()
+
+    controller = WalletController(exchange_mock, config_mock)
+
+    result = await controller._fetch_documented_futures_balance()
+
+    assert result is None
+    exchange_mock.fapiPrivateV3GetBalance.assert_called_once_with({})
+    exchange_mock.fapiPrivateV2GetBalance.assert_called_once_with({})
+    exchange_mock.fapiPrivateGetBalance.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -408,11 +533,11 @@ async def test_wallet_controller_manual_close_max_risk_stop_loss():
     assert exchange_mock.create_order.call_count == 2
     exchange_mock.create_order.assert_any_call(
         symbol="BTC/USDT",
-        type="market",
+        type="STOP_MARKET",
         side="sell",
         amount=1.0,
         price=None,
-        params={"stopLossPrice": 95.0, "reduceOnly": "true"},
+        params={"triggerPrice": 95.0, "reduceOnly": "true"},
     )
 
 

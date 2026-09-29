@@ -3,8 +3,8 @@
 # ====================================================================
 
 system:
-  environment: "production"          # sandbox | production
-  heartbeat_timeout: 5            # Segundos tolerados antes do reset do processo filho
+  environment: "demo"          # demo | production
+  heartbeat_timeout: 10           # Segundos tolerados antes do reset do processo filho
   max_signal_latency_ms: 1000     # Idade máxima permitida para o sinal entrar em execução
 
 web_server:
@@ -42,7 +42,7 @@ global_risk:
   execution_exchange: "binance"   # A exchange principal onde o Core vai boletar as ordens
   max_daily_loss_pct: 2.0         # Trava de Drawdown Diário. Se atingido, bloqueia novas ordens
   max_simultaneous_trades: 3      # Limite absoluto de posições abertas ao mesmo tempo
-  default_stop_loss_pct: 1.5      # Stop Loss padrão configurado globalmente
+  default_stop_loss_pct: 3.0      # Stop Loss padrão configurado globalmente
   default_take_profit_pct: 3.0    # Take Profit padrão configurado globalmente
   trade_risk_percentage: 0.1      # Fração (10%) do saldo disponível em conta usada para abertura de cada ordem
   max_daily_loss_limit: 2.0       # Limite máximo de perda financeira diária permitida (ex: 100.0 USDT)
@@ -78,5 +78,3 @@ modules:
       allowed_exchanges: "*"
       activation_time: "07:00:00"
       standby_time:               # null = não entra em modo stand-by automaticamente
-
-

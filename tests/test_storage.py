@@ -77,7 +77,7 @@ def test_storage_unsubscribe():
     
     # Cancela inscrição
     storage.unsubscribe("config.environment", cb)
-    storage.config.environment = "sandbox"
+    storage.config.environment = "demo"
     
     # Não deve ter novos disparos
     assert len(events) == 1

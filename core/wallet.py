@@ -76,6 +76,8 @@ class WalletController:
         self._supports_take_profit_price = False
         self._exchange_boot_attempts = 3
         self._exchange_boot_retry_delay = 1.0
+        self._balance_ws_failures = 0
+        self._orders_ws_failures = 0
 
     def register_order_close_listener(self, listener: Callable[[dict], Any]) -> None:
         """Adiciona um listener para receber atualizações de fechamento de ordens."""
@@ -243,6 +245,214 @@ class WalletController:
             self._supports_take_profit_price,
         )
 
+    def _balance_params(self) -> dict:
+        """Monta params explícitos para saldo conforme o mercado configurado."""
+        try:
+            exchange_name = self.config.global_risk.execution_exchange
+            exchange_config = self.config.exchanges.get(exchange_name)
+            default_type = str(exchange_config.options.get("defaultType", "")).lower()
+        except Exception:
+            default_type = ""
+
+        if default_type in {"future", "futures", "swap", "linear"}:
+            return {"type": "future"}
+        return {}
+
+    def _uses_futures_balance(self) -> bool:
+        return self._balance_params().get("type") == "future"
+
+    @staticmethod
+    def _positive_float(value: Any) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes"}
+        return bool(value)
+
+    def _extract_margin_balance_components(self, balance_data: Any) -> List[dict]:
+        """Extrai moedas aceites como margem e seus valores brutos do payload de saldo."""
+        stable_bases = {"USDT", "USDC", "USD"}
+        components: Dict[str, dict] = {}
+
+        def add_component(asset: str, amount: Any, *, margin_available: bool = False) -> None:
+            code = str(asset or "").upper()
+            parsed_amount = self._positive_float(amount)
+            if not code or parsed_amount is None:
+                return
+            if code not in stable_bases and not margin_available:
+                return
+
+            previous = components.get(code)
+            if previous is None or parsed_amount > previous["amount"]:
+                components[code] = {
+                    "asset": code,
+                    "amount": parsed_amount,
+                    "margin_available": code in stable_bases or margin_available,
+                }
+
+        free_balance = balance_data.get("free", {}) if isinstance(balance_data, dict) else {}
+        if isinstance(free_balance, dict):
+            for base in stable_bases:
+                add_component(base, free_balance.get(base), margin_available=True)
+
+        for base in stable_bases:
+            account = balance_data.get(base, {}) if isinstance(balance_data, dict) else {}
+            if not isinstance(account, dict):
+                continue
+            for key in ("free", "availableBalance", "total", "marginBalance", "walletBalance"):
+                add_component(base, account.get(key), margin_available=True)
+
+        for bucket in ("total", "available", "used"):
+            values = balance_data.get(bucket, {}) if isinstance(balance_data, dict) else {}
+            if not isinstance(values, dict):
+                continue
+            for base in stable_bases:
+                add_component(base, values.get(base), margin_available=True)
+
+        info = balance_data.get("info", {}) if isinstance(balance_data, dict) else {}
+        raw_assets = []
+        if isinstance(balance_data, list):
+            raw_assets = balance_data
+        elif isinstance(info, dict):
+            raw_assets = info.get("assets", [])
+        elif isinstance(info, list):
+            raw_assets = info
+
+        if isinstance(raw_assets, list):
+            for asset in raw_assets:
+                if not isinstance(asset, dict):
+                    continue
+                code = str(asset.get("asset", "")).upper()
+                margin_available = self._truthy(asset.get("marginAvailable", code in stable_bases))
+                for key in ("availableBalance", "maxWithdrawAmount", "marginBalance", "walletBalance", "balance"):
+                    add_component(code, asset.get(key), margin_available=margin_available)
+                    if code in components:
+                        break
+
+        return sorted(components.values(), key=lambda item: item["asset"])
+
+    async def _asset_usdt_rate(self, asset: str) -> Optional[float]:
+        code = str(asset).upper()
+        if code in {"USDT", "USDC", "USD"}:
+            return 1.0
+
+        fetch_ticker = getattr(self.exchange, "fetch_ticker", None)
+        if not fetch_ticker:
+            return None
+
+        for symbol in (f"{code}/USDT:USDT", f"{code}/USDT"):
+            try:
+                ticker = fetch_ticker(symbol)
+                if inspect.iscoroutine(ticker):
+                    ticker = await ticker
+                price = (
+                    ticker.get("last")
+                    or ticker.get("mark")
+                    or ticker.get("close")
+                    or ticker.get("bid")
+                    or ticker.get("ask")
+                )
+                rate = self._positive_float(price)
+                if rate is not None:
+                    return rate
+            except Exception as exc:
+                logger.debug("[Wallet] Falha ao converter %s via %s: %s", code, symbol, exc)
+        return None
+
+    async def _build_margin_balance_snapshot(self, balance_data: Any) -> Tuple[float, List[dict]]:
+        components = self._extract_margin_balance_components(balance_data)
+        breakdown = []
+        total = 0.0
+
+        for component in components:
+            asset = component["asset"]
+            amount = float(component["amount"])
+            rate = await self._asset_usdt_rate(asset)
+            if rate is None:
+                continue
+
+            value_usdt = amount * rate
+            total += value_usdt
+            breakdown.append({
+                "asset": asset,
+                "amount": amount,
+                "rate_usdt": rate,
+                "value_usdt": value_usdt,
+            })
+
+        return total, breakdown
+
+    def _extract_stable_balance(self, balance_data: Any) -> float:
+        """Compatibilidade para testes antigos: soma stables/margem sem conversão assíncrona."""
+        total = 0.0
+        for component in self._extract_margin_balance_components(balance_data):
+            if component["asset"] in {"USDT", "USDC", "USD"}:
+                total += float(component["amount"])
+
+        return total
+
+    def _fetch_balance_snapshot(self) -> Any:
+        params = self._balance_params()
+        if params:
+            return self.exchange.fetch_balance(params)
+        return self.exchange.fetch_balance()
+
+    async def _fetch_documented_futures_balance(self) -> Optional[Any]:
+        """Consulta endpoints USDⓈ-M balance da Binance documentados para futures."""
+        for method_name in (
+            "fapiPrivateV3GetBalance",
+            "fapiPrivateV2GetBalance",
+        ):
+            method = getattr(self.exchange, method_name, None)
+            if not method:
+                continue
+            try:
+                result = method({})
+                if inspect.iscoroutine(result):
+                    result = await result
+                if self._extract_margin_balance_components(result):
+                    return result
+            except ccxt.BaseError as exc:
+                logger.warning(
+                    "[Wallet] Falha ao consultar saldo futures via %s: %s",
+                    method_name,
+                    exc,
+                )
+        return None
+
+    async def _fetch_initial_balance(self) -> float:
+        balance_data = await self._with_exchange_boot_retries(
+            "fetch_balance",
+            self._fetch_balance_snapshot,
+        )
+        balance, breakdown = await self._build_margin_balance_snapshot(balance_data)
+        if balance > 0 or not self._uses_futures_balance():
+            storage.wallet.balance_breakdown = breakdown
+            return balance
+
+        documented_balance = await self._with_exchange_boot_retries(
+            "fapi_balance",
+            self._fetch_documented_futures_balance,
+        )
+        if documented_balance is None:
+            storage.wallet.balance_breakdown = []
+            return 0.0
+        balance, breakdown = await self._build_margin_balance_snapshot(documented_balance)
+        storage.wallet.balance_breakdown = breakdown
+        return balance
+
+    def _watch_balance_snapshot(self) -> Any:
+        params = self._balance_params()
+        if params:
+            return self.exchange.watch_balance(params)
+        return self.exchange.watch_balance()
+
     async def initialize_and_sync(
         self, open_operations_db: List[dict], current_daily_loss: float
     ) -> List[dict]:
@@ -263,18 +473,7 @@ class WalletController:
                 logger.info("[Wallet] Validando credenciais com a Exchange via REST API...")
                 await self._with_exchange_boot_retries("load_markets", self._maybe_load_markets)
                 self._detect_protection_capabilities()
-                balance_data = await self._with_exchange_boot_retries(
-                    "fetch_balance",
-                    self.exchange.fetch_balance,
-                )
-                free_balance = balance_data.get("free", {})
-                allowed_bases = ["USDT", "USDC", "USD"]
-                usdt_balance = 0.0
-                for base in allowed_bases:
-                    if base in free_balance and free_balance[base] > 0:
-                        usdt_balance = free_balance[base]
-                        break
-                storage.wallet.balance = float(usdt_balance)
+                storage.wallet.balance = await self._fetch_initial_balance()
             except ccxt.AuthenticationError as e:
                 logger.critical(f"[Wallet] Falha crítica de autenticação na Exchange (API Keys inválidas): {e}")
                 raise e
@@ -392,27 +591,41 @@ class WalletController:
         logger.info("[Wallet] Loop watch_balance iniciado.")
         while self._is_running:
             try:
-                balance = await self.exchange.watch_balance()
-                free_balance = balance.get("free", {})
-                
-                # Busca apenas pelas moedas base homologadas para evitar "saldo fantasma" (restos de outras moedas)
-                allowed_bases = ["USDT", "USDC", "USD"]
-                usdt_balance = None
-                for base in allowed_bases:
-                    if base in free_balance and free_balance[base] > 0:
-                        usdt_balance = free_balance[base]
-                        break
-                            
-                if usdt_balance is not None:
-                    storage.wallet.balance = float(usdt_balance)
+                balance = await self._watch_balance_snapshot()
+                parsed_balance, breakdown = await self._build_margin_balance_snapshot(balance)
+                if parsed_balance > 0 or storage.wallet.balance <= 0:
+                    storage.wallet.balance = parsed_balance
+                    storage.wallet.balance_breakdown = breakdown
+                self._balance_ws_failures = 0
             except ccxt.NetworkError as e:
-                logger.warning(f"[Wallet] Erro de rede no WebSocket watch_balance: {e}")
-                await asyncio.sleep(5)
+                self._balance_ws_failures += 1
+                wait_seconds = self._websocket_retry_delay(self._balance_ws_failures)
+                logger.warning(
+                    "[Wallet] Erro de rede no WebSocket watch_balance (%d). Nova tentativa em %.1fs: %s",
+                    self._balance_ws_failures,
+                    wait_seconds,
+                    e,
+                )
+                await self._refresh_balance_via_rest()
+                await asyncio.sleep(wait_seconds)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[Wallet] Erro no loop watch_balance: {e}")
                 await asyncio.sleep(5)
+
+    def _websocket_retry_delay(self, failures: int) -> float:
+        return min(60.0, 5.0 * max(1, failures))
+
+    async def _refresh_balance_via_rest(self) -> None:
+        try:
+            balance = await self._fetch_initial_balance()
+            if balance > 0 or storage.wallet.balance <= 0:
+                storage.wallet.balance = balance
+        except (ccxt.NetworkError, OSError, TimeoutError) as exc:
+            logger.debug("[Wallet] Atualização REST de saldo também falhou: %s", exc)
+        except Exception as exc:
+            logger.debug("[Wallet] Falha inesperada ao atualizar saldo via REST: %s", exc)
 
     async def _handle_closed_order(self, order: dict) -> None:
         """
@@ -565,9 +778,17 @@ class WalletController:
                 orders = await self.exchange.watch_orders()
                 for order in orders:
                     await self._handle_closed_order(order)
+                self._orders_ws_failures = 0
             except ccxt.NetworkError as e:
-                logger.warning(f"[Wallet] Erro de rede no WebSocket watch_orders: {e}")
-                await asyncio.sleep(5)
+                self._orders_ws_failures += 1
+                wait_seconds = self._websocket_retry_delay(self._orders_ws_failures)
+                logger.warning(
+                    "[Wallet] Erro de rede no WebSocket watch_orders (%d). Nova tentativa em %.1fs: %s",
+                    self._orders_ws_failures,
+                    wait_seconds,
+                    e,
+                )
+                await asyncio.sleep(wait_seconds)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -701,12 +922,12 @@ class WalletController:
         try:
             sl_order = await self.exchange.create_order(
                 symbol=symbol,
-                type="market",
+                type="STOP_MARKET",
                 side=close_side,
                 amount=amount,
                 price=None,
                 params={
-                    "stopLossPrice": float(stop_loss),
+                    "triggerPrice": float(stop_loss),
                     "reduceOnly": "true",
                 },
             )
@@ -715,12 +936,12 @@ class WalletController:
             if take_profit is not None and float(take_profit) > 0:
                 tp_order = await self.exchange.create_order(
                     symbol=symbol,
-                    type="market",
+                    type="TAKE_PROFIT_MARKET",
                     side=close_side,
                     amount=amount,
                     price=None,
                     params={
-                        "takeProfitPrice": float(take_profit),
+                        "triggerPrice": float(take_profit),
                         "reduceOnly": "true",
                     },
                 )
@@ -972,24 +1193,13 @@ class WalletController:
                 f"[Wallet] Disparando ordem de mercado para {symbol} ({operation}) - Quantidade: {amount:.6f}"
             )
 
-            use_attached_protection = (
-                self._supports_attached_sl_tp
-                and self._supports_stop_loss_price
-                and (take_profit is None or self._supports_take_profit_price)
-            )
-
-            entry_params = {}
-            if use_attached_protection:
-                entry_params = self._build_attached_protection_params(stop_loss, take_profit)
-
+            # Abertura da posição (TOTALMENTE ISOLADA)
             entry_kwargs = {
                 "symbol": symbol,
                 "type": "market",
                 "side": operation.lower(),
                 "amount": amount,
             }
-            if entry_params:
-                entry_kwargs["params"] = entry_params
 
             order = await self.exchange.create_order(**entry_kwargs)
 
@@ -1001,46 +1211,90 @@ class WalletController:
                 "take_profit_order_id": None,
             }
 
-            if use_attached_protection:
-                protection_order_ids = self._extract_attached_protection_ids(order)
-                logger.info(f"[Wallet] Ordem [{guid}] aberta com SL/TP anexado na requisição de entrada.")
-            else:
+            try:
+                # Recalcula Stop Loss e Take Profit relativo ao preço de execução real (exec_price)
+                # para evitar ativação imediata em caso de sinais baseados em preços sintéticos (demo/wrapper)
+                final_stop_loss = stop_loss
+                final_take_profit = take_profit
+
+                is_manual_close = "stop_loss" in ignore_fields and "take_profit" in ignore_fields
+
+                if is_manual_close:
+                    safety_pct = self._risk_float("default_safety_stop_loss_pct", 5.0)
+                    if operation == "BUY":
+                        final_stop_loss = exec_price * (1.0 - safety_pct / 100.0)
+                    else:
+                        final_stop_loss = exec_price * (1.0 + safety_pct / 100.0)
+                    final_take_profit = None
+                else:
+                    price_in_signal = float(signal.get("price") or current_price)
+                    if price_in_signal > 0:
+                        if strategy_provided_stop_loss:
+                            if operation == "BUY":
+                                sl_pct = (price_in_signal - stop_loss) / price_in_signal
+                                final_stop_loss = exec_price * (1.0 - sl_pct)
+                            else:
+                                sl_pct = (stop_loss - price_in_signal) / price_in_signal
+                                final_stop_loss = exec_price * (1.0 + sl_pct)
+
+                        signal_tp = signal.get("take_profit")
+                        if signal_tp is not None and float(signal_tp) > 0:
+                            if operation == "BUY":
+                                tp_pct = (float(signal_tp) - price_in_signal) / price_in_signal
+                                final_take_profit = exec_price * (1.0 + tp_pct)
+                            else:
+                                tp_pct = (price_in_signal - float(signal_tp)) / price_in_signal
+                                final_take_profit = exec_price * (1.0 - tp_pct)
+
+                        if not strategy_provided_stop_loss:
+                            sl_pct = self._risk_float("default_stop_loss_pct", 1.5)
+                            if operation == "BUY":
+                                final_stop_loss = exec_price * (1.0 - sl_pct / 100.0)
+                            else:
+                                final_stop_loss = exec_price * (1.0 + sl_pct / 100.0)
+
+                        if signal_tp is None or float(signal_tp) <= 0:
+                            tp_pct = self._risk_float("default_take_profit_pct", 3.0)
+                            if operation == "BUY":
+                                final_take_profit = exec_price * (1.0 + tp_pct / 100.0)
+                            else:
+                                final_take_profit = exec_price * (1.0 - tp_pct / 100.0)
+
+                protection_order_ids = await self._create_protection_orders(
+                    guid=guid,
+                    symbol=symbol,
+                    operation=operation,
+                    amount=amount,
+                    stop_loss=final_stop_loss,
+                    take_profit=final_take_profit,
+                )
+            except Exception as protection_err:
+                logger.critical(
+                    f"[Wallet] Falha ao criar SL/TP para {guid}. Fechando posição desprotegida: {protection_err}"
+                )
+                await self._cancel_protection_orders(symbol, protection_order_ids)
                 try:
-                    protection_order_ids = await self._create_protection_orders(
-                        guid=guid,
-                        symbol=symbol,
-                        operation=operation,
-                        amount=amount,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
-                    )
-                except Exception as protection_err:
+                    await self._emergency_close_unprotected_position(guid, symbol, operation, amount)
+                except Exception as close_err:
                     logger.critical(
-                        f"[Wallet] Falha ao criar SL/TP para {guid}. Fechando posição desprotegida: {protection_err}"
+                        f"[Wallet] Falha ao fechar posição desprotegida {guid}: {close_err}"
                     )
-                    await self._cancel_protection_orders(symbol, protection_order_ids)
-                    try:
-                        await self._emergency_close_unprotected_position(guid, symbol, operation, amount)
-                    except Exception as close_err:
-                        logger.critical(
-                            f"[Wallet] Falha ao fechar posição desprotegida {guid}: {close_err}"
-                        )
-                        return {
-                            "guid": guid,
-                            "status": "FAILED",
-                            "amount": amount,
-                            "price": exec_price,
-                            "exchange_order_id": order_id,
-                            "reason": f"PROTECTION_ORDER_FAILED_EMERGENCY_CLOSE_FAILED: {protection_err}; {close_err}",
-                        }
                     return {
                         "guid": guid,
                         "status": "FAILED",
                         "amount": amount,
                         "price": exec_price,
                         "exchange_order_id": order_id,
-                        "reason": f"PROTECTION_ORDER_FAILED_POSITION_CLOSED: {protection_err}",
+                        "reason": f"PROTECTION_ORDER_FAILED_EMERGENCY_CLOSE_FAILED: {protection_err}; {close_err}",
                     }
+                return {
+                    "guid": guid,
+                    "status": "FAILED",
+                    "amount": amount,
+                    "price": exec_price,
+                    "exchange_order_id": order_id,
+                    "reason": f"PROTECTION_ORDER_FAILED_POSITION_CLOSED: {protection_err}",
+                }
 
             # Atualiza no storage com os dados consolidados da Exchange
             storage.wallet.active_positions[guid].update({
@@ -1048,6 +1302,8 @@ class WalletController:
                 "price": exec_price,
                 "exchange_order_id": order_id,
                 "status": "OPEN",
+                "stop_loss": final_stop_loss,
+                "take_profit": final_take_profit,
                 **protection_order_ids,
             })
             await self._mark_position_open(symbol, guid)

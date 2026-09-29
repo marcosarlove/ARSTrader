@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 import yaml
 
 
+SUPPORTED_ENVIRONMENTS = {"demo", "production"}
+
+
 @dataclass(frozen=True)
 class SystemConfig:
     environment: str
@@ -210,8 +213,13 @@ class ConfigManager:
         try:
             # 1. Parsing do bloco 'system'
             sys_data = raw["system"]
+            environment = str(sys_data["environment"]).lower()
+            if environment not in SUPPORTED_ENVIRONMENTS:
+                raise ValueError(
+                    f"system.environment inválido: {environment}. Use 'demo' ou 'production'."
+                )
             self.__dict__["system"] = SystemConfig(
-                environment=str(sys_data["environment"]),
+                environment=environment,
                 heartbeat_timeout=int(sys_data["heartbeat_timeout"]),
                 max_signal_latency_ms=int(sys_data["max_signal_latency_ms"]),
             )

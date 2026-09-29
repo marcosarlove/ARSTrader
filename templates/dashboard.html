@@ -50,11 +50,86 @@
     .balance-value {
         font-size: 2.5rem;
         font-weight: 800;
-        margin-bottom: 1rem;
         background: linear-gradient(to right, #ffffff, #c084fc);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         text-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .balance-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+    }
+
+    .balance-toggle {
+        width: 2.25rem;
+        height: 2.25rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--card-border);
+        color: var(--text-secondary);
+        border-radius: 0.5rem;
+        cursor: pointer;
+        transition: border-color 0.2s, color 0.2s, background 0.2s;
+    }
+
+    .balance-toggle:hover {
+        border-color: rgba(139, 92, 246, 0.45);
+        color: var(--text-primary);
+        background: rgba(139, 92, 246, 0.12);
+    }
+
+    .balance-toggle i {
+        width: 1rem;
+        height: 1rem;
+        transition: transform 0.2s;
+    }
+
+    .balance-toggle.open i {
+        transform: rotate(180deg);
+    }
+
+    .balance-breakdown {
+        display: none;
+        margin: -0.25rem 0 1rem;
+        border: 1px solid var(--card-border);
+        border-radius: 0.75rem;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.02);
+    }
+
+    .balance-breakdown.open {
+        display: block;
+    }
+
+    .balance-asset-row {
+        display: grid;
+        grid-template-columns: 0.8fr 1fr 1fr;
+        gap: 0.75rem;
+        padding: 0.7rem 0.85rem;
+        border-bottom: 1px solid var(--card-border);
+        font-size: 0.82rem;
+        align-items: center;
+    }
+
+    .balance-asset-row:last-child {
+        border-bottom: none;
+    }
+
+    .balance-asset {
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .balance-amount,
+    .balance-usdt {
+        font-family: 'Fira Code', monospace;
+        color: var(--text-secondary);
+        text-align: right;
     }
 
     .drawdown-container {
@@ -240,7 +315,13 @@
             <span>Carteira & Gestão de Risco</span>
         </div>
         <div>
-            <div class="balance-value" id="wallet-balance">0.00 USDT</div>
+            <div class="balance-row">
+                <div class="balance-value" id="wallet-balance">0.00 USDT</div>
+                <button class="balance-toggle" id="balance-toggle" type="button" aria-expanded="false" title="Ver composição do saldo">
+                    <i data-lucide="chevron-down"></i>
+                </button>
+            </div>
+            <div class="balance-breakdown" id="balance-breakdown"></div>
             <div class="comms-stat-item">
                 <span class="comms-stat-label">Drawdown Diário Acumulado</span>
                 <span class="comms-stat-value" id="daily-loss-counter">0.00 USDT</span>
@@ -335,6 +416,16 @@
 <script>
     let socket = null;
     let state = {};
+    let balanceBreakdownOpen = false;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const toggle = document.getElementById('balance-toggle');
+        if (!toggle) return;
+        toggle.addEventListener('click', () => {
+            balanceBreakdownOpen = !balanceBreakdownOpen;
+            renderBalanceBreakdown();
+        });
+    });
 
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -426,6 +517,7 @@
         if (state.wallet) {
             const balance = typeof state.wallet.balance === 'number' ? state.wallet.balance : 0;
             document.getElementById('wallet-balance').innerText = `${balance.toFixed(2)} USDT`;
+            renderBalanceBreakdown();
             
             const loss = typeof state.wallet.daily_loss_counter === 'number' ? state.wallet.daily_loss_counter : 0;
             document.getElementById('daily-loss-counter').innerText = `${loss.toFixed(2)} USDT`;
@@ -538,6 +630,43 @@
                 }).join('');
             }
         }
+    }
+
+    function renderBalanceBreakdown() {
+        const panel = document.getElementById('balance-breakdown');
+        const toggle = document.getElementById('balance-toggle');
+        if (!panel || !toggle) return;
+
+        const items = Array.isArray(state?.wallet?.balance_breakdown) ? state.wallet.balance_breakdown : [];
+        toggle.classList.toggle('open', balanceBreakdownOpen);
+        toggle.setAttribute('aria-expanded', balanceBreakdownOpen ? 'true' : 'false');
+        panel.classList.toggle('open', balanceBreakdownOpen);
+
+        if (!balanceBreakdownOpen) return;
+
+        if (items.length === 0) {
+            panel.innerHTML = `
+                <div class="balance-asset-row">
+                    <span class="balance-asset">-</span>
+                    <span class="balance-amount">Sem saldo</span>
+                    <span class="balance-usdt">0.00 USDT</span>
+                </div>
+            `;
+            return;
+        }
+
+        panel.innerHTML = items.map(item => {
+            const asset = item.asset || '-';
+            const amount = typeof item.amount === 'number' ? item.amount : 0;
+            const value = typeof item.value_usdt === 'number' ? item.value_usdt : 0;
+            return `
+                <div class="balance-asset-row">
+                    <span class="balance-asset">${asset}</span>
+                    <span class="balance-amount">${amount.toFixed(8)} ${asset}</span>
+                    <span class="balance-usdt">${value.toFixed(2)} USDT</span>
+                </div>
+            `;
+        }).join('');
     }
 
     connect();

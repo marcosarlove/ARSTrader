@@ -95,6 +95,7 @@ class WalletState(Observable):
     def __init__(self, on_change_fn: Callable[[str, Any], None]):
         super().__init__("wallet", on_change_fn)
         self.balance = 0.0
+        self.balance_breakdown = []
         self.max_daily_loss_pct = 0.0
         self.current_daily_loss_pct = 0.0
         self.simultaneous_trades = 0
@@ -119,7 +120,7 @@ class ConfigState(Observable):
     """Configurações ativas no ecossistema global do bot."""
     def __init__(self, on_change_fn: Callable[[str, Any], None]):
         super().__init__("config", on_change_fn)
-        self.environment = "sandbox"  # sandbox | production
+        self.environment = "demo"  # demo | production
         self.heartbeat_timeout = 15.0
 
 

@@ -52,7 +52,8 @@ def test_log_manager_asynchronous_flow(tmp_path):
     manager = LogManager(
         log_file=str(log_file),
         max_bytes=1000,
-        console_level=logging.WARNING
+        console_level=logging.WARNING,
+        file_level=logging.DEBUG
     )
     
     # Inicia o gerenciador de logs

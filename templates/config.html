@@ -221,7 +221,7 @@
                 <div class="form-group">
                     <label class="form-label" for="system-env">Ambiente</label>
                     <select class="form-select" id="system-env" name="system.environment">
-                        <option value="sandbox" {% if raw_config.system.environment == 'sandbox' %}selected{% endif %}>Sandbox (Teste)</option>
+                        <option value="demo" {% if raw_config.system.environment == 'demo' %}selected{% endif %}>Demo (Teste)</option>
                         <option value="production" {% if raw_config.system.environment == 'production' %}selected{% endif %}>Production (Real)</option>
                     </select>
                 </div>

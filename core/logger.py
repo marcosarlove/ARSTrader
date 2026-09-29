@@ -61,6 +61,19 @@ class ContextFilter(logging.Filter):
         return True
 
 
+class ThirdPartyNoiseFilter(logging.Filter):
+    """Bloqueia logs volumosos de bibliotecas externas no arquivo central."""
+    noisy_prefixes = (
+        "ccxt",
+        "aiohttp.access",
+        "websockets",
+        "asyncio",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith(self.noisy_prefixes)
+
+
 class LogManager:
     """
     Gerenciador do ecossistema de logs da aplicação.
@@ -72,16 +85,18 @@ class LogManager:
         log_file: Optional[str] = None,
         max_bytes: Optional[int] = None,
         backup_count: int = 5,
-        console_level: int = logging.INFO
+        console_level: int = logging.INFO,
+        file_level: Optional[int] = None
     ):
         self.log_file = log_file or os.getenv("LOG_FILE", "logs/arstrader.log")
         
-        # 150MB é uma excelente estimativa para ~1.000.000 de logs (média de 150 bytes/log)
         env_max_bytes = os.getenv("LOG_MAX_BYTES")
         self.max_bytes = max_bytes or (int(env_max_bytes) if env_max_bytes else 150 * 1024 * 1024)
         
         self.backup_count = backup_count
         self.console_level = console_level
+        env_file_level = os.getenv("LOG_FILE_LEVEL", "INFO").upper()
+        self.file_level = file_level if file_level is not None else getattr(logging, env_file_level, logging.INFO)
         
         self._queue: Optional[queue.Queue] = None
         self._listener: Optional[logging.handlers.QueueListener] = None
@@ -104,15 +119,17 @@ class LogManager:
         format_str = "%(asctime)s | %(levelname)-8s | %(relpath)s:%(lineno)d | %(funcName)s | %(message)s"
         formatter = logging.Formatter(format_str, datefmt="%Y-%m-%d %H:%M:%S")
 
-        # 3. Handler de arquivo nativo (Armazena tudo do nível DEBUG em diante)
+        # 3. Handler de arquivo nativo
         file_handler = logging.handlers.RotatingFileHandler(
             filename=self.log_file,
             maxBytes=self.max_bytes,
             backupCount=self.backup_count,
             encoding='utf-8'
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(self.file_level)
         file_handler.setFormatter(formatter)
+        if os.getenv("LOG_THIRD_PARTY_DEBUG", "0").lower() not in {"1", "true", "yes"}:
+            file_handler.addFilter(ThirdPartyNoiseFilter())
 
         # 4. Handler de console (Apenas status/visualização, >= INFO)
         console_handler = logging.StreamHandler(sys.stdout)
@@ -144,13 +161,29 @@ class LogManager:
         self._queue_handler.addFilter(context_filter)
         
         root_logger.addHandler(self._queue_handler)
+        self._quiet_noisy_loggers()
 
         self._is_running = True
         
         # Log inaugural no sistema não-bloqueante
         logging.getLogger("ARSTrader.Logger").info(
-            f"[Logger] Inicializado sistema não-bloqueante nativo. Arquivo: {self.log_file} (Máx Bytes: {self.max_bytes})"
+            f"[Logger] Inicializado sistema não-bloqueante nativo. Arquivo: {self.log_file} (Máx Bytes: {self.max_bytes}, File Level: {logging.getLevelName(self.file_level)})"
         )
+
+    def _quiet_noisy_loggers(self) -> None:
+        """Reduz verbosidade de bibliotecas que despejam payloads HTTP grandes."""
+        if os.getenv("LOG_THIRD_PARTY_DEBUG", "0").lower() in {"1", "true", "yes"}:
+            return
+
+        for logger_name in (
+            "ccxt",
+            "ccxt.base.exchange",
+            "ccxt.async_support.base.exchange",
+            "aiohttp.access",
+            "websockets",
+            "asyncio",
+        ):
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     def shutdown(self) -> None:
         """Desliga o sistema de logs de forma limpa escoando a fila restante."""
